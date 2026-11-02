@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+from collections.abc import Callable
 from datetime import date
 from pathlib import Path
 
@@ -20,7 +21,7 @@ from src.parsing import parse_location
 
 load_dotenv()
 
-CACHE_DIR = Path("cache")
+CACHE_DIR = Path(__file__).resolve().parent.parent / "cache"
 TIMEOUT = 15.0
 RETRY_WAIT_MAX = 2.0
 
@@ -34,6 +35,8 @@ INTEREST_CATEGORIES = {
     "hiking": "natural",
     "food": "catering.restaurant",
 }
+
+CITY_RESULT_TYPES = {"city"}
 
 _API_KEY_PATTERN = re.compile(r"(apiKey=)[^&]*")
 
@@ -105,12 +108,18 @@ def _cache_get(key: str) -> dict | None:
     path = CACHE_DIR / f"{key}.json"
     if not path.exists():
         return None
-    return json.loads(path.read_text())
+    try:
+        return json.loads(path.read_text())
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
 
 
 def _cache_set(key: str, data: dict) -> None:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    (CACHE_DIR / f"{key}.json").write_text(json.dumps(data))
+    path = CACHE_DIR / f"{key}.json"
+    tmp_path = path.with_name(f"{key}.tmp")
+    tmp_path.write_text(json.dumps(data))
+    tmp_path.replace(path)
 
 
 def _raise_for_status(response: httpx.Response) -> None:
@@ -120,7 +129,7 @@ def _raise_for_status(response: httpx.Response) -> None:
     if response.status_code == 429 or response.status_code >= 500:
         raise _RetryableStatus(response.status_code, safe_url)
     raise ToolError(
-        f"{safe_url} returned {response.status_code}: {response.text[:200]}"
+        f"{safe_url} returned {response.status_code}: {_redact(response.text)[:200]}"
     ) from None
 
 
@@ -145,6 +154,7 @@ def _get_json(
     url: str,
     params: dict,
     cache_extra: dict | None = None,
+    is_empty: Callable[[dict], bool] | None = None,
 ) -> dict:
     key = _cache_key(url, params, cache_extra)
     cached = _cache_get(key)
@@ -165,7 +175,11 @@ def _get_json(
     except (json.JSONDecodeError, ValueError):
         raise ToolError(f"invalid JSON response from {safe_url}") from None
 
-    _cache_set(key, data)
+    if not isinstance(data, dict):
+        raise ToolError(f"unexpected JSON response from {safe_url}: expected an object")
+
+    if is_empty is None or not is_empty(data):
+        _cache_set(key, data)
     return data
 
 
@@ -182,21 +196,34 @@ def geocode(city_state: str, client: httpx.Client | None = None) -> GeoPoint:
     owns_client = client is None
     client = client or httpx.Client()
     try:
-        data = _get_json(client, GEOAPIFY_GEOCODE_URL, params)
+        data = _get_json(
+            client,
+            GEOAPIFY_GEOCODE_URL,
+            params,
+            is_empty=lambda d: not d.get("results"),
+        )
     finally:
         if owns_client:
             client.close()
 
     results = data.get("results", [])
+    requested_city = city.casefold().strip()
     match = next(
-        (r for r in results if (r.get("state_code") or "").upper() == state),
+        (
+            r
+            for r in results
+            if r.get("result_type") in CITY_RESULT_TYPES
+            and (r.get("state_code") or "").upper() == state
+            and (r.get("city") or r.get("name") or "").casefold().strip() == requested_city
+        ),
         None,
     )
     if match is None:
-        raise ToolError(f"no geocode result for {city_state!r} matched state {state!r}")
+        raise ToolError(f"no city result for {city_state!r} matched {city!r} in {state!r}")
 
+    matched_city = match.get("city") or match.get("name")
     try:
-        return GeoPoint(city=city, state=state, lat=match.get("lat"), lon=match.get("lon"))
+        return GeoPoint(city=matched_city, state=state, lat=match.get("lat"), lon=match.get("lon"))
     except ValidationError:
         raise ToolError(f"malformed geocode result for {city_state!r}") from None
 
@@ -223,7 +250,12 @@ def search_places(
             "limit": limit,
             "apiKey": key,
         }
-        data = _get_json(client, GEOAPIFY_PLACES_URL, params)
+        data = _get_json(
+            client,
+            GEOAPIFY_PLACES_URL,
+            params,
+            is_empty=lambda d: not d.get("features"),
+        )
     finally:
         if owns_client:
             client.close()

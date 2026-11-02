@@ -1,6 +1,8 @@
+import importlib.util
 import time
 import traceback
 from datetime import date
+from pathlib import Path
 
 import httpx
 import pytest
@@ -8,7 +10,18 @@ import pytest
 from src import tools as tools_module
 from src.tools import ForecastDay, GeoPoint, ToolError, geocode, get_forecast, search_places
 
-GEOCODE_OK = {"results": [{"lat": 25.7617, "lon": -80.1918, "state_code": "FL"}]}
+GEOCODE_OK = {
+    "results": [
+        {
+            "city": "Miami",
+            "name": "Miami",
+            "state_code": "FL",
+            "result_type": "city",
+            "lat": 25.7617,
+            "lon": -80.1918,
+        }
+    ]
+}
 
 
 @pytest.fixture(autouse=True)
@@ -38,7 +51,19 @@ def test_geocode_success():
 def test_geocode_state_mismatch_raises():
     def handler(request):
         return httpx.Response(
-            200, json={"results": [{"lat": 25.7617, "lon": -80.1918, "state_code": "GA"}]}
+            200,
+            json={
+                "results": [
+                    {
+                        "city": "Miami",
+                        "name": "Miami",
+                        "state_code": "GA",
+                        "result_type": "city",
+                        "lat": 25.7617,
+                        "lon": -80.1918,
+                    }
+                ]
+            },
         )
 
     with _client(handler) as client, pytest.raises(ToolError):
@@ -354,8 +379,22 @@ def test_geocode_skips_wrong_state_picks_matching_result():
             200,
             json={
                 "results": [
-                    {"lat": 1.0, "lon": 2.0, "state_code": "GA"},
-                    {"lat": 25.7617, "lon": -80.1918, "state_code": "FL"},
+                    {
+                        "city": "Miami",
+                        "name": "Miami",
+                        "lat": 1.0,
+                        "lon": 2.0,
+                        "state_code": "GA",
+                        "result_type": "city",
+                    },
+                    {
+                        "city": "Miami",
+                        "name": "Miami",
+                        "lat": 25.7617,
+                        "lon": -80.1918,
+                        "state_code": "FL",
+                        "result_type": "city",
+                    },
                 ]
             },
         )
@@ -386,3 +425,204 @@ def test_retry_wait_max_near_zero_is_fast(monkeypatch):
 
     assert attempts["n"] == 3
     assert elapsed < 1.0
+
+
+# --- Fix 1: geocode verifies the matched place, not only the state ---
+
+
+DENVR_CO_RESULTS = {
+    "results": [
+        {
+            "city": "Denver",
+            "name": "Denver",
+            "state_code": "CO",
+            "result_type": "city",
+            "lat": 39.7392,
+            "lon": -104.9903,
+        },
+        {
+            "city": "Thornton",
+            "name": "Hampton Inn Denvr Thorntn",
+            "state_code": "CO",
+            "result_type": "amenity",
+            "lat": 39.87,
+            "lon": -104.97,
+        },
+    ]
+}
+
+
+def test_geocode_rejects_misspelled_city_with_no_matching_result():
+    def handler(request):
+        return httpx.Response(200, json=DENVR_CO_RESULTS)
+
+    with _client(handler) as client, pytest.raises(ToolError):
+        geocode("Denvr, CO", client=client)
+
+
+def test_geocode_accepts_correctly_spelled_city():
+    def handler(request):
+        return httpx.Response(200, json=DENVR_CO_RESULTS)
+
+    with _client(handler) as client:
+        point = geocode("Denver, CO", client=client)
+
+    assert point == GeoPoint(city="Denver", state="CO", lat=39.7392, lon=-104.9903)
+
+
+def test_geocode_rejects_amenity_only_match():
+    def handler(request):
+        return httpx.Response(200, json=DENVR_CO_RESULTS)
+
+    with _client(handler) as client, pytest.raises(ToolError):
+        geocode("Thornton, CO", client=client)
+
+
+def test_geocode_picks_city_result_over_amenity_for_same_city():
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "city": "Thornton",
+                        "name": "Hampton Inn Thornton",
+                        "state_code": "CO",
+                        "result_type": "amenity",
+                        "lat": 1.0,
+                        "lon": 2.0,
+                    },
+                    {
+                        "city": "Thornton",
+                        "name": "Thornton",
+                        "state_code": "CO",
+                        "result_type": "city",
+                        "lat": 39.87,
+                        "lon": -104.97,
+                    },
+                ]
+            },
+        )
+
+    with _client(handler) as client:
+        point = geocode("Thornton, CO", client=client)
+
+    assert point == GeoPoint(city="Thornton", state="CO", lat=39.87, lon=-104.97)
+
+
+def test_geocode_matches_case_insensitively():
+    def handler(request):
+        return httpx.Response(200, json=GEOCODE_OK)
+
+    with _client(handler) as client:
+        point = geocode("miami, fl", client=client)
+
+    assert point.city == "Miami"
+
+
+# --- Fix 2: empty results/features are never cached ---
+
+
+def test_geocode_empty_results_not_cached():
+    attempts = {"n": 0}
+
+    def handler(request):
+        attempts["n"] += 1
+        return httpx.Response(200, json={"results": []})
+
+    with _client(handler) as client:
+        with pytest.raises(ToolError):
+            geocode("Miami, FL", client=client)
+        with pytest.raises(ToolError):
+            geocode("Miami, FL", client=client)
+
+    assert attempts["n"] == 2
+
+
+def test_search_places_empty_features_not_cached():
+    attempts = {"n": 0}
+
+    def handler(request):
+        if "geocode" in str(request.url):
+            return httpx.Response(200, json=GEOCODE_OK)
+        attempts["n"] += 1
+        return httpx.Response(200, json={"features": []})
+
+    with _client(handler) as client:
+        search_places("Miami, FL", "museums", client=client)
+        search_places("Miami, FL", "museums", client=client)
+
+    assert attempts["n"] == 2
+
+
+# --- Fix 3: corrupt cache file is treated as a miss, cache writes are atomic ---
+
+
+def test_corrupt_cache_file_treated_as_miss(tmp_path, monkeypatch):
+    monkeypatch.setattr(tools_module, "CACHE_DIR", tmp_path / "cache")
+    (tmp_path / "cache").mkdir(parents=True)
+
+    key = tools_module._cache_key(
+        tools_module.GEOAPIFY_GEOCODE_URL,
+        {"text": "Miami, FL, USA", "filter": "countrycode:us", "format": "json"},
+    )
+    corrupt_path = (tmp_path / "cache") / f"{key}.json"
+    corrupt_path.write_text("{not valid json")
+
+    attempts = {"n": 0}
+
+    def handler(request):
+        attempts["n"] += 1
+        return httpx.Response(200, json=GEOCODE_OK)
+
+    with _client(handler) as client:
+        point = geocode("Miami, FL", client=client)
+
+    assert attempts["n"] == 1
+    assert point.lat == 25.7617
+
+
+# --- Fix 4: 4xx response body is redacted before it reaches the error ---
+
+
+def test_4xx_body_redacted_in_error_and_traceback(monkeypatch):
+    monkeypatch.setenv("GEOAPIFY_KEY", "test-key")
+
+    def handler(request):
+        return httpx.Response(401, text="unauthorized: apiKey=SECRET123")
+
+    with _client(handler) as client, pytest.raises(ToolError) as excinfo:
+        geocode("Miami, FL", client=client)
+
+    assert "SECRET123" not in str(excinfo.value)
+    full_traceback = "".join(
+        traceback.format_exception(excinfo.type, excinfo.value, excinfo.tb)
+    )
+    assert "SECRET123" not in full_traceback
+
+
+# --- Fix 5: a valid JSON body that isn't an object raises ToolError ---
+
+
+def test_non_object_json_response_raises_tool_error():
+    def handler(request):
+        return httpx.Response(200, text="[]")
+
+    with _client(handler) as client, pytest.raises(ToolError):
+        geocode("Miami, FL", client=client)
+
+
+# --- Fix 6: CACHE_DIR is anchored to the project root ---
+
+
+def test_cache_dir_anchored_to_project_root():
+    # Load a fresh copy of the module (separate from sys.modules["src.tools"], which the
+    # autouse _isolated_cache fixture has already patched) so CACHE_DIR reflects the
+    # unpatched, real computation.
+    module_path = Path(tools_module.__file__)
+    spec = importlib.util.spec_from_file_location("tools_fresh_for_test", module_path)
+    fresh = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fresh)
+
+    expected = module_path.resolve().parent.parent / "cache"
+    assert fresh.CACHE_DIR == expected

@@ -32,7 +32,7 @@ OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 INTEREST_CATEGORIES = {
     "museums": "entertainment.museum",
     "history": "heritage",
-    "hiking": "natural",
+    "hiking": "leisure.park,national_park,natural.mountain",
     "food": "catering.restaurant",
 }
 

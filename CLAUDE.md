@@ -17,7 +17,7 @@ validates every plan. See docs/PLAN.md, docs/DECISIONS.md, and docs/SPEC.md.
 - No paid APIs. LLM = OpenAI SDK against Groq's endpoint, default model openai/gpt-oss-120b.
 
 ## Layout
-src/ (parsing, tools, planner, validator, agent), tests/, docs/,
+src/ (parsing, tools, models, geo, constants, planner, validator, agent), tests/, docs/,
 traces/ (JSON run traces, gitignored), cache/ (API response cache, gitignored)
 
 ## Code style

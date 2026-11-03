@@ -14,9 +14,10 @@ from pathlib import Path
 
 import httpx
 from dotenv import load_dotenv
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
+from src.models import ForecastDay, GeoPoint, Place
 from src.parsing import parse_location
 
 load_dotenv()
@@ -52,31 +53,6 @@ class _RetryableStatus(Exception):
         self.status_code = status_code
         self.safe_url = safe_url
         super().__init__(f"{safe_url} returned {status_code}")
-
-
-class GeoPoint(BaseModel):
-    city: str
-    state: str
-    lat: float
-    lon: float
-
-
-class Place(BaseModel):
-    name: str
-    address: str
-    state: str | None
-    lat: float
-    lon: float
-    interest: str
-    source: str
-    source_id: str
-
-
-class ForecastDay(BaseModel):
-    date: date
-    rain_chance: float
-    high_f: float
-    source: str
 
 
 def _today() -> date:

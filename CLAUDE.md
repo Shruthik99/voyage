@@ -1,7 +1,7 @@
 # Voyage
 
 Agentic US travel planner. An LLM picks tools and repairs plans; plain-Python code
-validates every plan. See docs/PLAN.md, docs/DECISIONS.md, and docs/SPEC.md (once it exists).
+validates every plan. See docs/PLAN.md, docs/DECISIONS.md, and docs/SPEC.md.
 
 ## Hard rules
 - US only. Input is a list of "City, ST" strings; never split one string on commas.

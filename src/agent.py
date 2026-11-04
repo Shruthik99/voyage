@@ -162,14 +162,21 @@ class PlaceRegistry:
     def city_points(self) -> dict[str, GeoPoint]:
         return dict(self._city_points)
 
-    def catalog(self, city_state: str) -> list[dict]:
-        """Up to CATALOG_PER_INTEREST places per interest searched for this city."""
+    def catalog(self, city_state: str, stop_mode: str = "ids") -> list[dict]:
+        """Up to CATALOG_PER_INTEREST places per interest searched for this city.
+
+        In "full" mode every entry carries the fields the model must copy onto
+        the stop it writes (source, address, state included); "ids" mode stays
+        minimal since the model only ever names a source_id, at no extra token
+        cost.
+        """
         bucket = self._places_by_city.get(_canon_city_key(city_state), {})
         by_interest: dict[str, list[Place]] = {}
         for place in bucket.values():
             by_interest.setdefault(place.interest, []).append(place)
+        summary = _place_summary_full if stop_mode == "full" else _place_summary
         return [
-            _place_summary(place)
+            summary(place)
             for places in by_interest.values()
             for place in places[:CATALOG_PER_INTEREST]
         ]
@@ -179,6 +186,20 @@ def _place_summary(place: Place) -> dict:
     return {
         "source_id": place.source_id,
         "name": place.name,
+        "interest": place.interest,
+        "state": place.state,
+        "lat": place.lat,
+        "lon": place.lon,
+    }
+
+
+def _place_summary_full(place: Place) -> dict:
+    """Every field ProposalStopFull requires, so the model copies rather than invents."""
+    return {
+        "source": place.source,
+        "source_id": place.source_id,
+        "name": place.name,
+        "address": place.address,
         "interest": place.interest,
         "state": place.state,
         "lat": place.lat,
@@ -472,15 +493,26 @@ def _skeleton_payload(skeleton: list[tuple[date, str]]) -> list[dict]:
     return [{"day": i + 1, "date": d.isoformat(), "city": c} for i, (d, c) in enumerate(skeleton)]
 
 
-def _catalog_payload(registry: PlaceRegistry, request: TripRequest) -> dict:
-    return {city: registry.catalog(city) for city in dict.fromkeys(request.route)}
+def _catalog_payload(registry: PlaceRegistry, request: TripRequest, stop_mode: str) -> dict:
+    return {city: registry.catalog(city, stop_mode) for city in dict.fromkeys(request.route)}
 
 
-def _proposal_system_prompt(request: TripRequest, *, repair: bool) -> str:
+def _proposal_system_prompt(request: TripRequest, *, repair: bool, stop_mode: str) -> str:
     interests = ", ".join(request.interests) or "none"
+    if stop_mode == "full":
+        pick_instructions = (
+            "Pick stops only from the catalog provided. For each stop, copy its source, "
+            "source_id, name, address, state, lat and lon exactly as they appear in its "
+            "catalog entry -- never alter an id, never change the source, and never write "
+            "a place, address or coordinate that is not in the catalog."
+        )
+    else:
+        pick_instructions = (
+            "Pick stops only by source_id from the catalog provided; never invent a "
+            "place, a coordinate, or a source_id."
+        )
     base = (
-        "Build the itinerary for the trip below. Pick stops only by source_id from the "
-        "catalog provided; never invent a place, a coordinate, or a source_id. Never "
+        f"Build the itinerary for the trip below. {pick_instructions} Never "
         "output a price -- cost fields are not part of your schema. "
         f"Radius limit: {RADIUS_KM} km from each city's center. "
         f"Max straight-line distance per day: {MAX_DAY_KM} km. "
@@ -503,11 +535,11 @@ def _initial_proposal_messages(
 ) -> list[dict]:
     payload = {
         "days": _skeleton_payload(skeleton),
-        "catalog": _catalog_payload(registry, request),
+        "catalog": _catalog_payload(registry, request, stop_mode),
         "stop_mode": stop_mode,
     }
     return [
-        {"role": "system", "content": _proposal_system_prompt(request, repair=False)},
+        {"role": "system", "content": _proposal_system_prompt(request, repair=False, stop_mode=stop_mode)},
         {"role": "user", "content": json.dumps(payload)},
     ]
 
@@ -517,10 +549,14 @@ def _repair_messages(
     registry: PlaceRegistry,
     prior_proposal: dict,
     failures: list[dict],
+    stop_mode: str,
 ) -> list[dict]:
     return [
-        {"role": "system", "content": _proposal_system_prompt(request, repair=True)},
-        {"role": "user", "content": json.dumps({"catalog": _catalog_payload(registry, request)})},
+        {"role": "system", "content": _proposal_system_prompt(request, repair=True, stop_mode=stop_mode)},
+        {
+            "role": "user",
+            "content": json.dumps({"catalog": _catalog_payload(registry, request, stop_mode)}),
+        },
         {"role": "assistant", "content": json.dumps(prior_proposal)},
         {"role": "user", "content": json.dumps({"failures": failures})},
     ]
@@ -1029,7 +1065,7 @@ def _propose_and_repair(
         failures = _failure_payload(report.results)
         trace.repair(repairs + 1, failures)
 
-        messages = _repair_messages(request, registry, last_proposal, failures)
+        messages = _repair_messages(request, registry, last_proposal, failures, stop_mode)
         proposal = _run_proposal_phase(
             client, model, messages, trace, "repair", stop_mode, reasoning_effort
         )

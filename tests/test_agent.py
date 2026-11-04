@@ -570,6 +570,130 @@ def test_full_mode_wrong_state_stop_fails_v1():
     assert any(r.code == "state_mismatch" for r in report.results)
 
 
+# --- 14b. Full mode's catalog must carry what the model is asked to copy ---
+#
+# The first live smoke test showed arm A (stop_mode="full") scoring a 0%
+# hallucinated-venue rate not because the model invented places, but because
+# the catalog never told it the source label, so it guessed "catalog" (the
+# name of the JSON section it was reading). These tests pin the fix: full
+# mode's catalog carries source/address, and the model copying it exactly
+# traces, while an altered id or an invented source still fails V5.
+
+
+def test_catalog_full_mode_adds_source_and_address_ids_mode_unchanged():
+    registry = PlaceRegistry()
+    registry.record_places("Austin, TX", [_place()])
+
+    ids_fields = set(registry.catalog("Austin, TX", "ids")[0])
+    full_fields = set(registry.catalog("Austin, TX", "full")[0])
+
+    assert ids_fields == {"source_id", "name", "interest", "state", "lat", "lon"}
+    assert full_fields == {
+        "source",
+        "source_id",
+        "name",
+        "address",
+        "interest",
+        "state",
+        "lat",
+        "lon",
+    }
+    # Default (no stop_mode arg) is the existing call sites' usage: must stay "ids".
+    assert registry.catalog("Austin, TX") == registry.catalog("Austin, TX", "ids")
+
+
+def test_full_mode_proposal_prompt_contains_source_address_and_state():
+    registry = PlaceRegistry()
+    registry.record_places("Austin, TX", [_place()])
+    skeleton = [(date(2026, 11, 3), "Austin, TX")]
+
+    messages = agent_module._initial_proposal_messages(_request(), skeleton, registry, "full")
+    content = messages[1]["content"]
+
+    assert '"source": "geoapify"' in content
+    assert '"address": "1 Main St"' in content
+    assert '"state": "TX"' in content
+    assert '"source_id": "p1"' in content
+
+
+def test_ids_mode_proposal_prompt_has_no_address_or_source_field():
+    registry = PlaceRegistry()
+    registry.record_places("Austin, TX", [_place()])
+    skeleton = [(date(2026, 11, 3), "Austin, TX")]
+
+    messages = agent_module._initial_proposal_messages(_request(), skeleton, registry, "ids")
+    content = messages[1]["content"]
+
+    assert "address" not in content
+    assert '"source"' not in content
+    # Token cost unchanged: the ids-mode catalog in the prompt is exactly what
+    # registry.catalog(..., "ids") produces -- stop_mode="full" adds nothing here.
+    assert json.loads(content)["catalog"]["Austin, TX"] == registry.catalog("Austin, TX", "ids")
+
+
+def test_full_mode_system_prompt_instructs_copying_not_inventing():
+    prompt = agent_module._proposal_system_prompt(_request(), repair=False, stop_mode="full")
+
+    assert "copy" in prompt.lower()
+    assert "source" in prompt.lower()
+    assert "never" in prompt.lower()
+
+
+def test_full_mode_stop_copied_exactly_from_catalog_passes_v5():
+    registry = PlaceRegistry()
+    registry.record_places("Austin, TX", [_place()])
+    registry.record_point("Austin, TX", GeoPoint(city="Austin", state="TX", lat=30.0, lon=-97.0))
+    skeleton = [(date(2026, 11, 3), "Austin, TX")]
+    request = _request()
+
+    entry = registry.catalog("Austin, TX", "full")[0]
+    proposal = ProposalFull(days=[{"day": 1, "stops": [entry]}])
+
+    itinerary, failures = _build_itinerary(proposal, skeleton, registry, request, "full", False)
+    assert failures == []
+    context = _build_context(registry, request)
+    report = validate(itinerary, context)
+
+    assert not any(r.rule == "V5" and r.status == "fail" for r in report.results)
+
+
+def test_full_mode_altered_id_fails_v5():
+    registry = PlaceRegistry()
+    registry.record_places("Austin, TX", [_place()])
+    registry.record_point("Austin, TX", GeoPoint(city="Austin", state="TX", lat=30.0, lon=-97.0))
+    skeleton = [(date(2026, 11, 3), "Austin, TX")]
+    request = _request()
+
+    entry = {**registry.catalog("Austin, TX", "full")[0], "source_id": "bogus-id"}
+    proposal = ProposalFull(days=[{"day": 1, "stops": [entry]}])
+
+    itinerary, failures = _build_itinerary(proposal, skeleton, registry, request, "full", False)
+    assert failures == []
+    context = _build_context(registry, request)
+    report = validate(itinerary, context)
+
+    assert any(r.rule == "V5" and r.status == "fail" for r in report.results)
+
+
+def test_full_mode_source_catalog_fails_v5():
+    """Regression for the live smoke-test bug: the model wrote source="catalog"."""
+    registry = PlaceRegistry()
+    registry.record_places("Austin, TX", [_place()])
+    registry.record_point("Austin, TX", GeoPoint(city="Austin", state="TX", lat=30.0, lon=-97.0))
+    skeleton = [(date(2026, 11, 3), "Austin, TX")]
+    request = _request()
+
+    entry = {**registry.catalog("Austin, TX", "full")[0], "source": "catalog"}
+    proposal = ProposalFull(days=[{"day": 1, "stops": [entry]}])
+
+    itinerary, failures = _build_itinerary(proposal, skeleton, registry, request, "full", False)
+    assert failures == []
+    context = _build_context(registry, request)
+    report = validate(itinerary, context)
+
+    assert any(r.rule == "V5" and r.status == "fail" for r in report.results)
+
+
 # --- 15. Skeleton ---
 
 

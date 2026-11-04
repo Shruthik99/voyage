@@ -83,3 +83,16 @@ to answer a question the trace already answers, and would turn B-vs-C into two i
 samples instead of the same first attempt with and without repair. The trade is that B and C
 are paired, not independent: fine for comparing them to each other, not for a significance
 claim that assumes independence.
+
+## Arm A sees the full record, not just an id
+Chose: in stop_mode="full", the catalog entry for each place includes source, source_id, name,
+address, state, lat and lon -- every field ProposalStopFull requires -- and the system prompt
+tells the model to copy those fields exactly, never alter an id, and never write a place not in
+the catalog. stop_mode="ids" is untouched: no source or address field, no extra tokens.
+Rejected: leaving the full-mode catalog at the ids-mode summary (source_id, name, interest,
+state, lat, lon) and trusting the model to supply source correctly on its own.
+Why: the first live smoke test showed arm A scoring a 0% real-venue rate -- not because it
+invented places, but because it was never told the source label and wrote "catalog", the name
+of the JSON section it was copying from. V5 correctly failed every stop. The baseline must be
+given what it needs to copy correctly, or it measures a setup flaw instead of the model; V5
+itself is unchanged, so a genuinely altered id or an invented source still fails.

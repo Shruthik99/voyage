@@ -26,6 +26,7 @@ from src.agent import (
 from src.constants import FORECAST_MAX_DAYS
 from src.llm import LLMError
 from src.models import GeoPoint, Place, RuleResult
+from src.trace import Trace
 from src.validator import validate
 
 PROPOSAL_SCHEMAS = (agent_module.PROPOSAL_SCHEMA_IDS, agent_module.PROPOSAL_SCHEMA_FULL)
@@ -1212,3 +1213,182 @@ def test_plan_trip_gap_inside_forecast_range_gets_weather_unverified(tmp_path, m
     day = result.itinerary.days[0]
     assert day.forecast is None
     assert day.warnings == ["weather unverified"]
+
+
+# --- gather / plan_from_gathered: one gathering phase, more than one proposal ---
+
+
+def _gather_once(client, http_client, trace, **over):
+    return agent_module.gather(
+        _request(**over), client=client, http_client=http_client, trace=trace
+    )
+
+
+def test_gather_then_plan_matches_plan_trip(tmp_path):
+    """The split is a refactor: the same script must give the same itinerary."""
+    handler = make_handler(places_json=TWO_MUSEUMS)
+    script = [
+        _tool_call_message([("search_places", {"city_state": "Austin, TX", "interest": "museums"})]),
+        _no_tool_calls(),
+        _proposal_message({"days": [{"day": 1, "stop_ids": ["p1", "p2"]}]}),
+    ]
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        whole = plan_trip(
+            _request(), client=FakeClient(list(script)), http_client=http_client, trace_dir=tmp_path
+        )
+
+        trace = Trace("split", {})
+        client = FakeClient(list(script))
+        gathered = _gather_once(client, http_client, trace)
+        split = agent_module.plan_from_gathered(_request(), gathered, client=client, trace=trace)
+
+    assert split.report.ok == whole.report.ok is True
+    assert split.tool_calls == whole.tool_calls
+    assert [s.source_id for s in split.itinerary.days[0].stops] == [
+        s.source_id for s in whole.itinerary.days[0].stops
+    ]
+    # plan_from_gathered does not own the trace, so it does not write one.
+    assert split.trace_path is None
+
+
+def test_full_mode_proposal_does_not_pollute_the_registry(tmp_path):
+    """The property that makes a shared Gathered safe.
+
+    A "full" proposal writes whole stops, invented ones included. If that build
+    recorded them, a later proposal from the same Gathered would inherit them as
+    tool results and V5 would pass a place no tool ever returned.
+    """
+    handler = make_handler(places_json=TWO_MUSEUMS)
+    client = FakeClient(
+        [
+            _tool_call_message([("search_places", {"city_state": "Austin, TX", "interest": "museums"})]),
+            _no_tool_calls(),
+            _proposal_message(
+                {
+                    "days": [
+                        {
+                            "day": 1,
+                            "stops": [
+                                {
+                                    "name": "Invented Museum",
+                                    "address": "nowhere",
+                                    "state": "TX",
+                                    "lat": 30.0,
+                                    "lon": -97.0,
+                                    "interest": "museums",
+                                    "source": "made-up",
+                                    "source_id": "ghost",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            ),
+        ]
+    )
+
+    trace = Trace("full-arm", {})
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        gathered = _gather_once(client, http_client, trace)
+        before = gathered.registry.tool_results
+        result = agent_module.plan_from_gathered(
+            _request(), gathered, client=client, trace=trace, stop_mode="full", max_repairs=0
+        )
+
+    assert ("made-up", "ghost") not in gathered.registry.tool_results
+    assert gathered.registry.tool_results == before
+    assert gathered.registry.get("ghost") is None
+    assert any(r.rule == "V5" and r.status == "fail" for r in result.report.results)
+
+
+def test_two_arms_share_one_gathered_without_affecting_each_other(tmp_path):
+    handler = make_handler(places_json=TWO_MUSEUMS)
+    gather_client = FakeClient(
+        [
+            _tool_call_message([("search_places", {"city_state": "Austin, TX", "interest": "museums"})]),
+            _no_tool_calls(),
+        ]
+    )
+
+    gather_trace = Trace("shared", {})
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        gathered = _gather_once(gather_client, http_client, gather_trace)
+
+    # The invented-stop arm runs first; the id arm must be untouched by it.
+    full_trace = Trace("arm-a", {})
+    agent_module.plan_from_gathered(
+        _request(),
+        gathered,
+        client=FakeClient(
+            [
+                _proposal_message(
+                    {
+                        "days": [
+                            {
+                                "day": 1,
+                                "stops": [
+                                    {
+                                        "name": "Ghost",
+                                        "address": "x",
+                                        "state": "TX",
+                                        "lat": 30.0,
+                                        "lon": -97.0,
+                                        "interest": "museums",
+                                        "source": "made-up",
+                                        "source_id": "ghost",
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                )
+            ]
+        ),
+        trace=full_trace,
+        stop_mode="full",
+        max_repairs=0,
+    )
+
+    ids_trace = Trace("arm-c", {})
+    ids = agent_module.plan_from_gathered(
+        _request(),
+        gathered,
+        client=FakeClient([_proposal_message({"days": [{"day": 1, "stop_ids": ["p1", "p2"]}]})]),
+        trace=ids_trace,
+        max_repairs=0,
+    )
+
+    assert ids.report.ok is True
+    assert ids.tool_calls == gathered.tool_calls
+    # Each arm proposed once; neither trace carries the other's LLM calls.
+    for trace in (full_trace, ids_trace):
+        assert [e["phase"] for e in trace.events if e["kind"] == "llm_call"] == ["propose"]
+
+
+def test_validation_event_records_stop_counts_and_day_km(tmp_path):
+    handler = make_handler(places_json=TWO_MUSEUMS)
+    client = FakeClient(
+        [
+            _tool_call_message([("search_places", {"city_state": "Austin, TX", "interest": "museums"})]),
+            _no_tool_calls(),
+            # two real ids plus one that no tool returned
+            _proposal_message({"days": [{"day": 1, "stop_ids": ["p1", "p2", "ghost"]}]}),
+        ]
+    )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        plan_trip(
+            _request(),
+            client=client,
+            http_client=http_client,
+            trace_dir=tmp_path,
+            max_repairs=0,
+        )
+
+    data = json.loads(next(tmp_path.glob("*.json")).read_text(encoding="utf-8"))
+    event = next(e for e in data["events"] if e["kind"] == "validation")
+
+    assert event["stops"] == 2  # the ghost was dropped during the build
+    assert event["stops_proposed"] == 3  # but it was still proposed
+    assert len(event["day_km"]) == 1

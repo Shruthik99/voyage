@@ -18,6 +18,7 @@ Python also prices every stop (`src.pricing`).
 import json
 import time
 import uuid
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Literal
@@ -43,7 +44,7 @@ from src.models import (
 from src.parsing import LocationError, parse_location
 from src.tools import INTEREST_CATEGORIES, ToolError
 from src.trace import TRACE_DIR, Trace
-from src.validator import validate
+from src.validator import day_km, validate
 
 DEFAULT_MODEL = llm.DEFAULT_MODEL
 
@@ -183,6 +184,28 @@ def _place_summary(place: Place) -> dict:
         "lat": place.lat,
         "lon": place.lon,
     }
+
+
+@dataclass
+class Gathered:
+    """Everything the tool phases found, and nothing about what to do with it.
+
+    The seam between gathering and proposing. It exists so one gathering phase
+    can back more than one proposal: two eval arms that differ only in how they
+    are asked to name stops should not also differ in which places they were
+    shown, or the comparison measures both at once.
+
+    Read-only downstream. `plan_from_gathered` only reads the registry, which is
+    what makes reuse safe -- in particular `_build_itinerary` in "full" mode
+    builds Places directly and never records them, so a proposal that invents a
+    place cannot smuggle it into a later proposal's tool_results.
+    """
+
+    registry: PlaceRegistry
+    forecast_failures: dict[str, str] = field(default_factory=dict)
+    forecast_warnings: list[str] = field(default_factory=list)
+    tool_calls: int = 0
+    cap_hit: bool = False
 
 
 # --- Phase 1: tool schemas and dispatch ---
@@ -926,6 +949,28 @@ def _merge_build_failures(
 # --- Phase 4: repair ---
 
 
+#: Build failures that mean "the model named a stop and it never became one":
+#: an id no tool returned, or a stop that would not construct.
+_DROPPED_STOP_CODES = ("untraceable", "malformed_stop")
+
+
+def _attempt_stats(itinerary: Itinerary, build_failures: list[RuleResult]) -> dict:
+    """The per-attempt denominators Trace.validation records.
+
+    stops_proposed counts dropped stops back in, because a hallucination rate
+    divided by surviving stops flatters exactly the run that hallucinated most:
+    in "ids" mode every bad id is dropped during the build, so the stops that
+    remain are the ones that were fine.
+    """
+    stops = sum(len(day.stops) for day in itinerary.days)
+    dropped = sum(1 for f in build_failures if f.code in _DROPPED_STOP_CODES)
+    return {
+        "stops": stops,
+        "stops_proposed": stops + dropped,
+        "day_km": [round(day_km(day.stops), 3) for day in itinerary.days],
+    }
+
+
 def _failure_payload(results: list[RuleResult]) -> list[dict]:
     details = [r for r in results if not r.summary and r.status == "fail"]
     details.sort(key=lambda r: (r.rule, r.day if r.day is not None else -1, r.stop if r.stop is not None else -1))
@@ -975,7 +1020,7 @@ def _propose_and_repair(
     )
     context = _build_context(registry, request)
     report = _merge_build_failures(validate(itinerary, context), build_failures)
-    trace.validation(0, report)
+    trace.validation(0, report, **_attempt_stats(itinerary, build_failures))
 
     repairs = 0
     last_proposal = proposal.model_dump()
@@ -1002,13 +1047,98 @@ def _propose_and_repair(
         report = _merge_build_failures(validate(itinerary, context), build_failures)
         repairs += 1
         last_proposal = proposal.model_dump()
-        trace.validation(repairs, report)
+        trace.validation(repairs, report, **_attempt_stats(itinerary, build_failures))
 
     itinerary.verified = report.ok
     return itinerary, report, context, repairs
 
 
-# --- Entry point ---
+# --- Entry points ---
+
+
+def gather(
+    request: TripRequest,
+    *,
+    client: OpenAI | None = None,
+    http_client: httpx.Client | None = None,
+    model: str = DEFAULT_MODEL,
+    trace: Trace,
+    max_tool_steps: int = MAX_TOOL_STEPS,
+    reasoning_effort: str | None = None,
+) -> Gathered:
+    """Find the places. Geocode the route, fetch weather, then run the tool loop.
+
+    Everything before the model is asked for an itinerary. Split out from
+    plan_trip so one gathering phase can back more than one proposal; see
+    Gathered.
+    """
+    llm_client = client or llm.build_client()
+    registry = PlaceRegistry()
+
+    _geocode_route(request, registry, http_client, trace)
+    forecast_failures, forecast_warnings = _forecast_route(request, registry, http_client, trace)
+    tool_calls = _run_tool_phase(
+        llm_client,
+        model,
+        request,
+        registry,
+        trace,
+        http_client,
+        max_tool_steps,
+        reasoning_effort,
+    )
+
+    return Gathered(
+        registry=registry,
+        forecast_failures=forecast_failures,
+        forecast_warnings=forecast_warnings,
+        tool_calls=tool_calls,
+        cap_hit=tool_calls >= max_tool_steps,
+    )
+
+
+def plan_from_gathered(
+    request: TripRequest,
+    gathered: Gathered,
+    *,
+    client: OpenAI | None = None,
+    model: str = DEFAULT_MODEL,
+    trace: Trace,
+    stop_mode: Literal["ids", "full"] = "ids",
+    max_repairs: int = MAX_REPAIRS,
+    reasoning_effort: str | None = None,
+) -> AgentResult:
+    """Propose, price, validate, repair -- from places already gathered.
+
+    Returns trace_path=None: the caller owns the trace it passed in, including
+    when to write it.
+    """
+    llm_client = client or llm.build_client()
+    skeleton = _build_skeleton(request)
+
+    itinerary, report, context, repairs = _propose_and_repair(
+        llm_client,
+        model,
+        request,
+        gathered.registry,
+        skeleton,
+        trace,
+        stop_mode,
+        max_repairs,
+        gathered.cap_hit,
+        gathered.forecast_failures,
+        reasoning_effort,
+    )
+    itinerary.warnings = [*itinerary.warnings, *gathered.forecast_warnings]
+
+    return AgentResult(
+        itinerary=itinerary,
+        report=report,
+        context=context,
+        repairs=repairs,
+        tool_calls=gathered.tool_calls,
+        trace_path=None,
+    )
 
 
 def plan_trip(
@@ -1023,53 +1153,41 @@ def plan_trip(
     max_repairs: int = MAX_REPAIRS,
     reasoning_effort: str | None = None,
 ) -> AgentResult:
+    """One trip, end to end: gather, then propose and repair, on one trace."""
     run_id = uuid.uuid4().hex
     trace_request = {**request.model_dump(mode="json"), "reasoning_effort": reasoning_effort}
     trace = Trace(run_id, trace_request)
-    registry = PlaceRegistry()
     llm_client = client or llm.build_client()
 
     try:
-        skeleton = _build_skeleton(request)
-        _geocode_route(request, registry, http_client, trace)
-        forecast_failures, forecast_warnings = _forecast_route(request, registry, http_client, trace)
-        tool_calls = _run_tool_phase(
-            llm_client,
-            model,
+        gathered = gather(
             request,
-            registry,
-            trace,
-            http_client,
-            max_tool_steps,
-            reasoning_effort,
+            client=llm_client,
+            http_client=http_client,
+            model=model,
+            trace=trace,
+            max_tool_steps=max_tool_steps,
+            reasoning_effort=reasoning_effort,
         )
-        cap_hit = tool_calls >= max_tool_steps
-        itinerary, report, context, repairs = _propose_and_repair(
-            llm_client,
-            model,
+        result = plan_from_gathered(
             request,
-            registry,
-            skeleton,
-            trace,
-            stop_mode,
-            max_repairs,
-            cap_hit,
-            forecast_failures,
-            reasoning_effort,
+            gathered,
+            client=llm_client,
+            model=model,
+            trace=trace,
+            stop_mode=stop_mode,
+            max_repairs=max_repairs,
+            reasoning_effort=reasoning_effort,
         )
-        itinerary.warnings = [*itinerary.warnings, *forecast_warnings]
-        trace.finish("ok" if report.ok else "unverified", repairs=repairs, tool_calls=tool_calls)
+        trace.finish(
+            "ok" if result.report.ok else "unverified",
+            repairs=result.repairs,
+            tool_calls=result.tool_calls,
+        )
     except Exception:
         trace.finish("error")
         raise
     finally:
         trace_path = trace.write(trace_dir)
 
-    return AgentResult(
-        itinerary=itinerary,
-        report=report,
-        context=context,
-        repairs=repairs,
-        tool_calls=tool_calls,
-        trace_path=trace_path,
-    )
+    return result.model_copy(update={"trace_path": trace_path})

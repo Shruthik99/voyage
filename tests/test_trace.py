@@ -151,3 +151,52 @@ def test_trace_llm_call_usage_defaults_to_none_when_not_given():
     event = trace.events[0]
     assert event["prompt_tokens"] is None
     assert event["completion_tokens"] is None
+
+
+def test_trace_validation_records_stop_counts_and_day_km():
+    trace = Trace("run-stats", {})
+    trace.validation(0, _report(), stops=4, stops_proposed=6, day_km=[1.5, 2.0])
+
+    event = trace.events[0]
+    assert event["stops"] == 4
+    assert event["stops_proposed"] == 6
+    assert event["day_km"] == [1.5, 2.0]
+
+
+def test_trace_validation_stats_default_to_none():
+    trace = Trace("run-stats-none", {})
+    trace.validation(0, _report())
+
+    event = trace.events[0]
+    assert event["stops"] is None
+    assert event["stops_proposed"] is None
+    assert event["day_km"] is None
+
+
+def test_trace_adopt_copies_events_marked_shared():
+    gather = Trace("gather", {})
+    gather.tool_call("geocode", {"city_state": "Austin, TX"}, duration_ms=1.0)
+    gather.llm_call("tools", model="m", has_tools=True, has_schema=False, duration_ms=2.0)
+
+    arm = Trace("arm", {})
+    arm.adopt(gather)
+    arm.llm_call("propose", model="m", has_tools=False, has_schema=True, duration_ms=3.0)
+
+    assert [e["kind"] for e in arm.events] == ["tool_call", "llm_call", "llm_call"]
+    assert [e.get("shared") for e in arm.events] == [True, True, None]
+    # The adopted events are copies: the arm must not be able to edit the source.
+    arm.events[0]["name"] = "changed"
+    assert gather.events[0]["name"] == "geocode"
+    assert "shared" not in gather.events[0]
+
+
+def test_trace_adopt_lets_two_traces_share_one_gather():
+    gather = Trace("gather", {})
+    gather.tool_call("search_places", {"city_state": "Austin, TX"}, duration_ms=1.0)
+
+    first, second = Trace("a", {}), Trace("b", {})
+    for arm in (first, second):
+        arm.adopt(gather)
+
+    assert len(first.events) == len(second.events) == 1
+    assert first.events[0] is not second.events[0]

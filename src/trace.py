@@ -35,12 +35,16 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
-def _scrub(value: Any) -> Any:
-    """Walk a JSON-shaped value, removing API keys and key-bearing URLs from strings."""
+def scrub(value: Any) -> Any:
+    """Walk a JSON-shaped value, removing API keys and key-bearing URLs from strings.
+
+    Public because anything else that writes run output to disk needs the same
+    guarantee, and a second implementation is a second thing to get wrong.
+    """
     if isinstance(value, dict):
-        return {k: _scrub(v) for k, v in value.items()}
+        return {k: scrub(v) for k, v in value.items()}
     if isinstance(value, list):
-        return [_scrub(v) for v in value]
+        return [scrub(v) for v in value]
     if not isinstance(value, str):
         return value
 
@@ -50,6 +54,9 @@ def _scrub(value: Any) -> Any:
         if len(secret) >= _MIN_SECRET_LEN:
             text = text.replace(secret, "REDACTED")
     return text
+
+
+_scrub = scrub  # the name this module used before scrub went public
 
 
 class Trace:
@@ -108,13 +115,32 @@ class Trace:
             completion_tokens=completion_tokens,
         )
 
-    def validation(self, attempt: int, report: ValidationReport) -> None:
+    def validation(
+        self,
+        attempt: int,
+        report: ValidationReport,
+        *,
+        stops: int | None = None,
+        stops_proposed: int | None = None,
+        day_km: list[float] | None = None,
+    ) -> None:
+        """One attempt's verdict.
+
+        stops/stops_proposed/day_km are the denominators a report cannot carry:
+        how many stops survived the build, how many the model actually named
+        (the difference is what was dropped as untraceable or malformed), and
+        each day's straight-line km. Recording them here is what lets a reader
+        of the trace alone compute a per-stop rate, without the itinerary.
+        """
         self._add(
             "validation",
             attempt=attempt,
             ok=report.ok,
             estimated_share=report.estimated_share,
             unknown_count=report.unknown_count,
+            stops=stops,
+            stops_proposed=stops_proposed,
+            day_km=day_km,
             results=[r.model_dump() for r in report.results],
         )
 
@@ -123,6 +149,18 @@ class Trace:
 
     def note(self, message: str) -> None:
         self._add("note", message=message)
+
+    def adopt(self, other: "Trace") -> None:
+        """Append another trace's events, each marked shared=True.
+
+        One gathering phase can back more than one proposal (two eval arms
+        proposing from the same catalog). Each proposal still gets its own
+        trace, and adopting the gather's events keeps that trace a complete,
+        self-contained record of the tool results every stop traces back to.
+        The flag is what stops a reader double-counting shared cost as if each
+        trace had paid it.
+        """
+        self.events.extend({**event, "shared": True} for event in other.events)
 
     def finish(self, status: str, **extra) -> None:
         self.status = status

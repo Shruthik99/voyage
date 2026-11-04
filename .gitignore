@@ -4,4 +4,5 @@ __pycache__/
 traces/
 cache/
 .pytest_cache/
-.ruff_cache/AGENTS.md
+.ruff_cache/
+AGENTS.md

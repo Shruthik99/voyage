@@ -40,6 +40,8 @@ DEFAULT_MODEL = "openai/gpt-oss-120b"
 LLM_TIMEOUT = 60.0
 RETRY_WAIT_MAX = 2.0
 
+REASONING_EFFORTS = ("low", "medium", "high")
+
 TRANSIENT_ATTEMPTS = 3  # non-rate-limit transient errors
 RATE_LIMIT_ATTEMPTS = 5  # 429s: Groq's free tier needs more room to recover
 RATE_LIMIT_MARGIN = 0.5  # added to whatever wait the provider asks for
@@ -125,6 +127,7 @@ def chat(
     tools: list[dict] | None = None,
     response_format: dict | None = None,
     tool_choice: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> ChatCompletion:
     """One chat completion. Retries transient failures; raises on everything else."""
     if tools and response_format:
@@ -135,6 +138,11 @@ def chat(
             "tools and response_format cannot be combined in one request; "
             "call tools first, then ask for the structured result"
         )
+    if reasoning_effort is not None and reasoning_effort not in REASONING_EFFORTS:
+        raise LLMError(
+            f"invalid reasoning_effort {reasoning_effort!r}; must be one of "
+            f"{REASONING_EFFORTS} or None"
+        )
 
     kwargs: dict = {"model": model, "messages": messages}
     if tools:
@@ -143,6 +151,8 @@ def chat(
             kwargs["tool_choice"] = tool_choice
     if response_format:
         kwargs["response_format"] = response_format
+    if reasoning_effort is not None:
+        kwargs["reasoning_effort"] = reasoning_effort
 
     try:
         return _create(client, **kwargs)

@@ -201,6 +201,36 @@ def test_rate_limit_attempts_can_be_patched_down(monkeypatch):
     assert len(client.calls) == 2
 
 
+# --- chat: reasoning_effort ---
+
+
+def test_chat_includes_reasoning_effort_when_set():
+    success = _completion({"role": "assistant", "content": "hi"})
+    client = FakeClient([success])
+
+    chat(client, [{"role": "user", "content": "hi"}], model="m", reasoning_effort="low")
+
+    assert client.calls[0]["reasoning_effort"] == "low"
+
+
+def test_chat_omits_reasoning_effort_when_none():
+    success = _completion({"role": "assistant", "content": "hi"})
+    client = FakeClient([success])
+
+    chat(client, [{"role": "user", "content": "hi"}], model="m")
+
+    assert "reasoning_effort" not in client.calls[0]
+
+
+def test_chat_invalid_reasoning_effort_raises_llm_error_before_any_request():
+    client = FakeClient([])
+
+    with pytest.raises(LLMError):
+        chat(client, [{"role": "user", "content": "hi"}], model="m", reasoning_effort="extreme")
+
+    assert client.calls == []
+
+
 # --- chat: local guard against the Groq 400 ---
 
 

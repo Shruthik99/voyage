@@ -514,13 +514,21 @@ def _run_tool_phase(
     trace: Trace,
     http_client: httpx.Client | None,
     max_tool_steps: int,
+    reasoning_effort: str | None,
 ) -> int:
     messages = _tool_phase_messages(request)
     steps = 0
 
     while steps < max_tool_steps:
         start = time.monotonic()
-        response = llm.chat(client, messages, model=model, tools=TOOL_SCHEMAS, tool_choice="auto")
+        response = llm.chat(
+            client,
+            messages,
+            model=model,
+            tools=TOOL_SCHEMAS,
+            tool_choice="auto",
+            reasoning_effort=reasoning_effort,
+        )
         duration_ms = (time.monotonic() - start) * 1000
         message = response.choices[0].message
         reasoning = getattr(message, "reasoning", None) or ""
@@ -692,6 +700,7 @@ def _run_proposal_phase(
     trace: Trace,
     phase: str,
     stop_mode: str,
+    reasoning_effort: str | None,
 ) -> BaseModel:
     schema = _proposal_schema(stop_mode)
     proposal_model = _proposal_model(stop_mode)
@@ -707,6 +716,7 @@ def _run_proposal_phase(
                 "type": "json_schema",
                 "json_schema": {"name": "itinerary_proposal", "strict": True, "schema": schema},
             },
+            reasoning_effort=reasoning_effort,
         )
         duration_ms = (time.monotonic() - start) * 1000
         message = response.choices[0].message
@@ -947,9 +957,12 @@ def _propose_and_repair(
     max_repairs: int,
     cap_hit: bool,
     forecast_failures: dict[str, str],
+    reasoning_effort: str | None,
 ) -> tuple[Itinerary, ValidationReport, ValidationContext, int]:
     messages = _initial_proposal_messages(request, skeleton, registry, stop_mode)
-    proposal = _run_proposal_phase(client, model, messages, trace, "propose", stop_mode)
+    proposal = _run_proposal_phase(
+        client, model, messages, trace, "propose", stop_mode, reasoning_effort
+    )
 
     itinerary, build_failures = _build_itinerary(
         proposal,
@@ -972,7 +985,9 @@ def _propose_and_repair(
         trace.repair(repairs + 1, failures)
 
         messages = _repair_messages(request, registry, last_proposal, failures)
-        proposal = _run_proposal_phase(client, model, messages, trace, "repair", stop_mode)
+        proposal = _run_proposal_phase(
+            client, model, messages, trace, "repair", stop_mode, reasoning_effort
+        )
 
         itinerary, build_failures = _build_itinerary(
             proposal,
@@ -1006,9 +1021,11 @@ def plan_trip(
     trace_dir: Path | None = TRACE_DIR,
     max_tool_steps: int = MAX_TOOL_STEPS,
     max_repairs: int = MAX_REPAIRS,
+    reasoning_effort: str | None = None,
 ) -> AgentResult:
     run_id = uuid.uuid4().hex
-    trace = Trace(run_id, request.model_dump(mode="json"))
+    trace_request = {**request.model_dump(mode="json"), "reasoning_effort": reasoning_effort}
+    trace = Trace(run_id, trace_request)
     registry = PlaceRegistry()
     llm_client = client or llm.build_client()
 
@@ -1017,7 +1034,14 @@ def plan_trip(
         _geocode_route(request, registry, http_client, trace)
         forecast_failures, forecast_warnings = _forecast_route(request, registry, http_client, trace)
         tool_calls = _run_tool_phase(
-            llm_client, model, request, registry, trace, http_client, max_tool_steps
+            llm_client,
+            model,
+            request,
+            registry,
+            trace,
+            http_client,
+            max_tool_steps,
+            reasoning_effort,
         )
         cap_hit = tool_calls >= max_tool_steps
         itinerary, report, context, repairs = _propose_and_repair(
@@ -1031,6 +1055,7 @@ def plan_trip(
             max_repairs,
             cap_hit,
             forecast_failures,
+            reasoning_effort,
         )
         itinerary.warnings = [*itinerary.warnings, *forecast_warnings]
         trace.finish("ok" if report.ok else "unverified", repairs=repairs, tool_calls=tool_calls)

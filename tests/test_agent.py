@@ -24,6 +24,7 @@ from src.agent import (
     plan_trip,
 )
 from src.constants import FORECAST_MAX_DAYS
+from src.llm import LLMError
 from src.models import GeoPoint, Place, RuleResult
 from src.validator import validate
 
@@ -1108,6 +1109,88 @@ def test_plan_trip_last_day_null_high_still_covers_complete_days(tmp_path, monke
         f"for Austin, TX on {last_day.date.isoformat()}"
     )
     assert last_day.warnings == [expected_warning]
+
+
+# --- reasoning_effort: threaded through every llm.chat call, recorded in the trace ---
+
+
+def test_plan_trip_reasoning_effort_passed_to_every_llm_call(tmp_path):
+    handler = make_handler(places_json=TWO_MUSEUMS)
+    client = FakeClient(
+        [
+            _tool_call_message([("search_places", {"city_state": "Austin, TX", "interest": "museums"})]),
+            _no_tool_calls(),
+            _proposal_message({"days": [{"day": 1, "stop_ids": ["p1"]}]}),  # too few stops
+            _proposal_message({"days": [{"day": 1, "stop_ids": ["p1", "p2"]}]}),  # fixed
+        ]
+    )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        result = plan_trip(
+            _request(),
+            client=client,
+            http_client=http_client,
+            trace_dir=tmp_path,
+            reasoning_effort="low",
+        )
+
+    assert result.repairs == 1
+    for call in client.calls:
+        assert call["reasoning_effort"] == "low"
+
+
+def test_plan_trip_reasoning_effort_none_omits_kwarg_from_every_call(tmp_path):
+    handler = make_handler(places_json=TWO_MUSEUMS)
+    client = FakeClient(
+        [
+            _tool_call_message([("search_places", {"city_state": "Austin, TX", "interest": "museums"})]),
+            _no_tool_calls(),
+            _proposal_message({"days": [{"day": 1, "stop_ids": ["p1", "p2"]}]}),
+        ]
+    )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        plan_trip(_request(), client=client, http_client=http_client, trace_dir=tmp_path)
+
+    for call in client.calls:
+        assert "reasoning_effort" not in call
+
+
+def test_plan_trip_invalid_reasoning_effort_raises_llm_error(tmp_path):
+    handler = make_handler(places_json=TWO_MUSEUMS)
+    client = FakeClient([])
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client, pytest.raises(LLMError):
+        plan_trip(
+            _request(),
+            client=client,
+            http_client=http_client,
+            trace_dir=tmp_path,
+            reasoning_effort="extreme",
+        )
+
+
+def test_plan_trip_records_reasoning_effort_in_trace(tmp_path):
+    handler = make_handler(places_json=TWO_MUSEUMS)
+    client = FakeClient(
+        [
+            _tool_call_message([("search_places", {"city_state": "Austin, TX", "interest": "museums"})]),
+            _no_tool_calls(),
+            _proposal_message({"days": [{"day": 1, "stop_ids": ["p1", "p2"]}]}),
+        ]
+    )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        result = plan_trip(
+            _request(),
+            client=client,
+            http_client=http_client,
+            trace_dir=tmp_path,
+            reasoning_effort="medium",
+        )
+
+    data = json.loads(result.trace_path.read_text(encoding="utf-8"))
+    assert data["request"]["reasoning_effort"] == "medium"
 
 
 def test_plan_trip_gap_inside_forecast_range_gets_weather_unverified(tmp_path, monkeypatch):

@@ -145,6 +145,14 @@ class PlaceRegistry:
                 return forecast
         return None
 
+    def forecast_range(self, city_state: str) -> tuple[date, date] | None:
+        """Earliest and latest dates actually recorded for this city, or None if none."""
+        forecasts = self._forecasts.get(_canon_city_key(city_state))
+        if not forecasts:
+            return None
+        dates = [f.date for f in forecasts]
+        return min(dates), max(dates)
+
     @property
     def tool_results(self) -> set[tuple[str, str]]:
         return set(self._tool_results)
@@ -608,39 +616,31 @@ def _geocode_route(
         registry.record_point(city, point)
 
 
-def _forecast_days_needed(skeleton: list[tuple[date, str]], today: date) -> int:
-    """Days to request so the forecast covers the whole trip, capped at the API limit.
-
-    get_forecast always starts counting from today, so a trip that starts later
-    still needs the window measured from today, not from start_date.
-    """
-    last_date = skeleton[-1][0]
-    days = (last_date - today).days + 1
-    return max(1, min(days, FORECAST_MAX_DAYS))
-
-
 def _forecast_route(
     request: TripRequest,
-    skeleton: list[tuple[date, str]],
     registry: PlaceRegistry,
     http_client: httpx.Client | None,
     trace: Trace,
-    today: date,
-) -> tuple[int, dict[str, str], list[str]]:
-    """Fetch weather for every distinct route city. A failure is a warning, not a raise."""
-    window_days = _forecast_days_needed(skeleton, today)
+) -> tuple[dict[str, str], list[str]]:
+    """Fetch weather for every distinct route city. A failure is a warning, not a raise.
+
+    Open-Meteo counts forecast days from the destination's local date, which can
+    differ from the machine's date by a day. So every city gets the max window,
+    and coverage is judged later from the dates actually returned
+    (PlaceRegistry.forecast_range), never from the machine date.
+    """
     failures: dict[str, str] = {}
     run_warnings: list[str] = []
 
     for city in dict.fromkeys(request.route):
         start = time.monotonic()
         try:
-            forecasts = tools.get_forecast(city, window_days, client=http_client)
+            forecasts = tools.get_forecast(city, FORECAST_MAX_DAYS, client=http_client)
         except ToolError as exc:
             duration_ms = (time.monotonic() - start) * 1000
             trace.tool_call(
                 "get_forecast",
-                {"city_state": city, "days": window_days},
+                {"city_state": city, "days": FORECAST_MAX_DAYS},
                 error=str(exc),
                 duration_ms=duration_ms,
             )
@@ -650,30 +650,36 @@ def _forecast_route(
         duration_ms = (time.monotonic() - start) * 1000
         trace.tool_call(
             "get_forecast",
-            {"city_state": city, "days": window_days},
+            {"city_state": city, "days": FORECAST_MAX_DAYS},
             summary={"count": len(forecasts)},
             duration_ms=duration_ms,
         )
         registry.record_forecast(city, forecasts)
 
-    return window_days, failures, run_warnings
+    return failures, run_warnings
 
 
 def _weather_warning(
     city: str,
     day_date: date,
-    today: date,
-    window_days: int,
+    forecast: ForecastDay | None,
+    forecast_range: tuple[date, date] | None,
     forecast_failures: dict[str, str],
 ) -> str | None:
-    if day_date < today:
-        return "date is in the past"
+    if forecast is not None:
+        return None
     reason = forecast_failures.get(_canon_city_key(city))
     if reason is not None:
         return f"weather unavailable for {city}: {reason}"
-    if (day_date - today).days >= window_days:
+    if forecast_range is None:
+        return "weather unverified"
+    earliest, latest = forecast_range
+    if day_date < earliest:
+        return f"date is in the past for {city}"
+    if day_date > latest:
+        window_days = (latest - earliest).days + 1
         return f"outside the forecast window ({window_days} days) for {city} on {day_date.isoformat()}"
-    return None
+    return "weather unverified"
 
 
 # --- Phase 2: proposal (and repair, which reuses it) ---
@@ -773,11 +779,8 @@ def _build_itinerary(
     stop_mode: str,
     cap_hit: bool,
     *,
-    forecast_window_days: int = FORECAST_MAX_DAYS,
     forecast_failures: dict[str, str] | None = None,
-    today: date | None = None,
 ) -> tuple[Itinerary, list[RuleResult]]:
-    today = today if today is not None else tools._today()
     forecast_failures = forecast_failures or {}
     failures: list[RuleResult] = []
     valid_day_numbers = set(range(1, len(skeleton) + 1))
@@ -868,9 +871,8 @@ def _build_itinerary(
                 stops.append(_place_to_stop(place, request))
 
         forecast = registry.forecast_for(city, day_date)
-        warning = _weather_warning(city, day_date, today, forecast_window_days, forecast_failures)
-        if warning is None and forecast is None:
-            warning = "weather unverified"
+        forecast_range = registry.forecast_range(city)
+        warning = _weather_warning(city, day_date, forecast, forecast_range, forecast_failures)
         warnings = [warning] if warning else []
         days.append(Day(date=day_date, city=city, stops=stops, forecast=forecast, warnings=warnings))
 
@@ -944,9 +946,7 @@ def _propose_and_repair(
     stop_mode: str,
     max_repairs: int,
     cap_hit: bool,
-    forecast_window_days: int,
     forecast_failures: dict[str, str],
-    today: date,
 ) -> tuple[Itinerary, ValidationReport, ValidationContext, int]:
     messages = _initial_proposal_messages(request, skeleton, registry, stop_mode)
     proposal = _run_proposal_phase(client, model, messages, trace, "propose", stop_mode)
@@ -958,9 +958,7 @@ def _propose_and_repair(
         request,
         stop_mode,
         cap_hit,
-        forecast_window_days=forecast_window_days,
         forecast_failures=forecast_failures,
-        today=today,
     )
     context = _build_context(registry, request)
     report = _merge_build_failures(validate(itinerary, context), build_failures)
@@ -983,9 +981,7 @@ def _propose_and_repair(
             request,
             stop_mode,
             cap_hit,
-            forecast_window_days=forecast_window_days,
             forecast_failures=forecast_failures,
-            today=today,
         )
         context = _build_context(registry, request)
         report = _merge_build_failures(validate(itinerary, context), build_failures)
@@ -1019,10 +1015,7 @@ def plan_trip(
     try:
         skeleton = _build_skeleton(request)
         _geocode_route(request, registry, http_client, trace)
-        today = tools._today()
-        forecast_window_days, forecast_failures, forecast_warnings = _forecast_route(
-            request, skeleton, registry, http_client, trace, today
-        )
+        forecast_failures, forecast_warnings = _forecast_route(request, registry, http_client, trace)
         tool_calls = _run_tool_phase(
             llm_client, model, request, registry, trace, http_client, max_tool_steps
         )
@@ -1037,9 +1030,7 @@ def plan_trip(
             stop_mode,
             max_repairs,
             cap_hit,
-            forecast_window_days,
             forecast_failures,
-            today,
         )
         itinerary.warnings = [*itinerary.warnings, *forecast_warnings]
         trace.finish("ok" if report.ok else "unverified", repairs=repairs, tool_calls=tool_calls)

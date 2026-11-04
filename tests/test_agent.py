@@ -955,7 +955,7 @@ def test_plan_trip_forecast_failure_adds_unavailable_warning_and_completes(tmp_p
 
 def test_plan_trip_past_trip_date_gets_past_date_warning(tmp_path, monkeypatch):
     _patch_today(monkeypatch, today=date(2026, 11, 10))
-    handler = make_handler()
+    handler = make_handler(forecast_json=_forecast_json(date(2026, 11, 10), FORECAST_MAX_DAYS))
     client = FakeClient([_no_tool_calls(), _proposal_message({"days": [{"day": 1, "stop_ids": []}]})])
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
@@ -968,5 +968,120 @@ def test_plan_trip_past_trip_date_gets_past_date_warning(tmp_path, monkeypatch):
         )
 
     day = result.itinerary.days[0]
-    assert day.warnings == ["date is in the past"]
+    assert day.warnings == ["date is in the past for Austin, TX"]
     assert day.forecast is None
+
+
+# --- Regression: Open-Meteo counts days from the destination's local date, which can
+# be a day ahead of (or behind) the machine's date. Coverage must be judged from the
+# dates the API actually returned, never from arithmetic against the machine date. ---
+
+REGRESSION_TODAY = date(2026, 11, 4)
+REGRESSION_FORECAST_START = date(2026, 11, 3)  # a day BEFORE the patched "today"
+REGRESSION_FORECAST_DAYS = 16  # == FORECAST_MAX_DAYS
+
+
+def _forecast_json_for_dates(dates: list[date]) -> dict:
+    n = len(dates)
+    return {
+        "daily": {
+            "time": [d.isoformat() for d in dates],
+            "temperature_2m_max": [70.0] * n,
+            "precipitation_probability_max": [10.0] * n,
+        }
+    }
+
+
+def _regression_handler():
+    return make_handler(forecast_json=_forecast_json(REGRESSION_FORECAST_START, REGRESSION_FORECAST_DAYS))
+
+
+def test_plan_trip_covers_trip_day_when_destination_local_date_is_ahead_of_machine_today(
+    tmp_path, monkeypatch
+):
+    """The exact reported bug: machine date 2026-11-04, Open-Meteo's local-date window
+    starts 2026-11-03. A trip day that the old today-based arithmetic would have pushed
+    outside the window must still get its forecast, because the API actually returned it.
+    """
+    _patch_today(monkeypatch, today=REGRESSION_TODAY)
+    handler = _regression_handler()
+    client = FakeClient(
+        [_no_tool_calls(), _proposal_message({"days": [{"day": 1, "stop_ids": []}, {"day": 2, "stop_ids": []}]})]
+    )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        result = plan_trip(
+            _request(days_per_stop=2, start_date=date(2026, 11, 5)),
+            client=client,
+            http_client=http_client,
+            trace_dir=tmp_path,
+            max_repairs=0,
+        )
+
+    assert [d.date for d in result.itinerary.days] == [date(2026, 11, 5), date(2026, 11, 6)]
+    for day in result.itinerary.days:
+        assert day.forecast is not None
+        assert day.warnings == []
+
+
+def test_plan_trip_date_after_last_returned_forecast_gets_window_warning_with_actual_count(
+    tmp_path, monkeypatch
+):
+    _patch_today(monkeypatch, today=REGRESSION_TODAY)
+    handler = _regression_handler()
+    client = FakeClient([_no_tool_calls(), _proposal_message({"days": [{"day": 1, "stop_ids": []}]})])
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        result = plan_trip(
+            _request(start_date=date(2026, 11, 19)),  # one day past the last returned date (11-18)
+            client=client,
+            http_client=http_client,
+            trace_dir=tmp_path,
+            max_repairs=0,
+        )
+
+    day = result.itinerary.days[0]
+    assert day.forecast is None
+    assert day.warnings == [
+        f"outside the forecast window ({REGRESSION_FORECAST_DAYS} days) for Austin, TX on 2026-11-19"
+    ]
+
+
+def test_plan_trip_date_before_first_returned_forecast_gets_past_date_warning(tmp_path, monkeypatch):
+    _patch_today(monkeypatch, today=REGRESSION_TODAY)
+    handler = _regression_handler()
+    client = FakeClient([_no_tool_calls(), _proposal_message({"days": [{"day": 1, "stop_ids": []}]})])
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        result = plan_trip(
+            _request(start_date=date(2026, 11, 2)),  # one day before the first returned date (11-03)
+            client=client,
+            http_client=http_client,
+            trace_dir=tmp_path,
+            max_repairs=0,
+        )
+
+    day = result.itinerary.days[0]
+    assert day.forecast is None
+    assert day.warnings == ["date is in the past for Austin, TX"]
+
+
+def test_plan_trip_gap_inside_forecast_range_gets_weather_unverified(tmp_path, monkeypatch):
+    _patch_today(monkeypatch, today=REGRESSION_TODAY)
+    handler = make_handler(
+        forecast_json=_forecast_json_for_dates([date(2026, 11, 3), date(2026, 11, 5)])  # 11-04 missing
+    )
+    client = FakeClient([_no_tool_calls(), _proposal_message({"days": [{"day": 1, "stop_ids": []}]})])
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        result = plan_trip(
+            _request(start_date=date(2026, 11, 4)),
+            client=client,
+            http_client=http_client,
+            trace_dir=tmp_path,
+            max_repairs=0,
+        )
+
+    day = result.itinerary.days[0]
+    assert day.forecast is None
+    assert day.warnings == ["weather unverified"]

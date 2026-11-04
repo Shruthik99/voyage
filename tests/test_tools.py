@@ -193,6 +193,102 @@ def test_get_forecast_success():
     ]
 
 
+def test_get_forecast_drops_trailing_incomplete_day():
+    dates = [f"2026-11-{3 + i:02d}" for i in range(16)]
+    highs = [70.0 + i for i in range(16)]
+    highs[-1] = None
+    rain = [10 + i for i in range(16)]
+
+    def handler(request):
+        if "geocode" in str(request.url):
+            return httpx.Response(200, json=GEOCODE_OK)
+        return httpx.Response(
+            200,
+            json={
+                "daily": {
+                    "time": dates,
+                    "temperature_2m_max": highs,
+                    "precipitation_probability_max": rain,
+                }
+            },
+        )
+
+    with _client(handler) as client:
+        forecast = get_forecast("Miami, FL", 16, client=client)
+
+    assert len(forecast) == 15
+    assert forecast[-1].date.isoformat() == "2026-11-17"
+
+
+def test_get_forecast_drops_middle_day_missing_rain_chance():
+    def handler(request):
+        if "geocode" in str(request.url):
+            return httpx.Response(200, json=GEOCODE_OK)
+        return httpx.Response(
+            200,
+            json={
+                "daily": {
+                    "time": ["2026-11-03", "2026-11-04", "2026-11-05"],
+                    "temperature_2m_max": [70.5, 68.2, 65.0],
+                    "precipitation_probability_max": [10, None, 30],
+                }
+            },
+        )
+
+    with _client(handler) as client:
+        forecast = get_forecast("Miami, FL", 3, client=client)
+
+    assert [f.date.isoformat() for f in forecast] == ["2026-11-03", "2026-11-05"]
+
+
+def test_get_forecast_mismatched_array_lengths_raises():
+    def handler(request):
+        if "geocode" in str(request.url):
+            return httpx.Response(200, json=GEOCODE_OK)
+        return httpx.Response(
+            200,
+            json={
+                "daily": {
+                    "time": ["2026-11-03", "2026-11-04"],
+                    "temperature_2m_max": [70.5],
+                    "precipitation_probability_max": [10, 40],
+                }
+            },
+        )
+
+    with _client(handler) as client, pytest.raises(ToolError):
+        get_forecast("Miami, FL", 2, client=client)
+
+
+def test_get_forecast_all_days_incomplete_raises():
+    def handler(request):
+        if "geocode" in str(request.url):
+            return httpx.Response(200, json=GEOCODE_OK)
+        return httpx.Response(
+            200,
+            json={
+                "daily": {
+                    "time": ["2026-11-03", "2026-11-04"],
+                    "temperature_2m_max": [None, None],
+                    "precipitation_probability_max": [10, 40],
+                }
+            },
+        )
+
+    with _client(handler) as client, pytest.raises(ToolError):
+        get_forecast("Miami, FL", 2, client=client)
+
+
+def test_get_forecast_missing_daily_key_raises():
+    def handler(request):
+        if "geocode" in str(request.url):
+            return httpx.Response(200, json=GEOCODE_OK)
+        return httpx.Response(200, json={})
+
+    with _client(handler) as client, pytest.raises(ToolError):
+        get_forecast("Miami, FL", 2, client=client)
+
+
 # --- 1. API key never appears in error messages or tracebacks ---
 
 

@@ -293,7 +293,10 @@ def get_forecast(
         if owns_client:
             client.close()
 
-    daily = data.get("daily", {})
+    daily = data.get("daily")
+    if not isinstance(daily, dict):
+        raise ToolError(f"open-meteo response for {city_state!r} has no daily block")
+
     dates = daily.get("time", [])
     highs = daily.get("temperature_2m_max", [])
     rain = daily.get("precipitation_probability_max", [])
@@ -301,10 +304,16 @@ def get_forecast(
     if not (len(dates) == len(highs) == len(rain)):
         raise ToolError("open-meteo returned mismatched daily arrays")
 
-    try:
-        return [
-            ForecastDay(date=d, rain_chance=r, high_f=h, source="open-meteo")
-            for d, h, r in zip(dates, highs, rain)
-        ]
-    except ValidationError:
-        raise ToolError(f"malformed forecast data for {city_state!r}") from None
+    forecasts: list[ForecastDay] = []
+    for d, h, r in zip(dates, highs, rain):
+        if d is None or h is None or r is None:
+            continue
+        try:
+            forecasts.append(ForecastDay(date=d, rain_chance=r, high_f=h, source="open-meteo"))
+        except ValidationError:
+            raise ToolError(f"malformed forecast data for {city_state!r}") from None
+
+    if not forecasts:
+        raise ToolError(f"no complete forecast days for {city_state!r}")
+
+    return forecasts

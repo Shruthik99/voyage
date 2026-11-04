@@ -1066,6 +1066,50 @@ def test_plan_trip_date_before_first_returned_forecast_gets_past_date_warning(tm
     assert day.warnings == ["date is in the past for Austin, TX"]
 
 
+def test_plan_trip_last_day_null_high_still_covers_complete_days(tmp_path, monkeypatch):
+    """Regression: Open-Meteo's last day in a 16-day response can have a null high (not
+    yet forecast). get_forecast must drop that one day, not discard the whole response,
+    so the window shrinks to the days actually complete rather than vanishing entirely.
+    """
+    today = date(2026, 11, 3)
+    _patch_today(monkeypatch, today=today)
+    dates = [(today + timedelta(days=i)).isoformat() for i in range(REGRESSION_FORECAST_DAYS)]
+    highs = [70.0] * REGRESSION_FORECAST_DAYS
+    highs[-1] = None
+    forecast_json = {
+        "daily": {
+            "time": dates,
+            "temperature_2m_max": highs,
+            "precipitation_probability_max": [10.0] * REGRESSION_FORECAST_DAYS,
+        }
+    }
+    handler = make_handler(forecast_json=forecast_json)
+    proposal_days = [{"day": i, "stop_ids": []} for i in range(1, REGRESSION_FORECAST_DAYS + 1)]
+    client = FakeClient([_no_tool_calls(), _proposal_message({"days": proposal_days})])
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        result = plan_trip(
+            _request(days_per_stop=REGRESSION_FORECAST_DAYS, start_date=today),
+            client=client,
+            http_client=http_client,
+            trace_dir=tmp_path,
+            max_repairs=0,
+        )
+
+    complete_days = REGRESSION_FORECAST_DAYS - 1  # last day dropped for the null high
+    for day in result.itinerary.days[:complete_days]:
+        assert day.forecast is not None
+        assert day.warnings == []
+
+    last_day = result.itinerary.days[complete_days]
+    assert last_day.forecast is None
+    expected_warning = (
+        f"outside the forecast window ({complete_days} days) "
+        f"for Austin, TX on {last_day.date.isoformat()}"
+    )
+    assert last_day.warnings == [expected_warning]
+
+
 def test_plan_trip_gap_inside_forecast_range_gets_weather_unverified(tmp_path, monkeypatch):
     _patch_today(monkeypatch, today=REGRESSION_TODAY)
     handler = make_handler(

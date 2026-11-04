@@ -1,0 +1,455 @@
+{
+  "schema_version": 1,
+  "trips": [
+    {
+      "trip_id": "portland-or",
+      "label": "single city, ambiguous name (Oregon)",
+      "tags": ["single-city", "ambiguous-pair"],
+      "expect": "plan",
+      "request": {
+        "route": ["Portland, OR"],
+        "days_per_stop": 2,
+        "travelers": 2,
+        "budget_usd": 600,
+        "meal_allowance_usd": 40,
+        "interests": ["museums", "food"],
+        "start_in_days": 3
+      }
+    },
+    {
+      "trip_id": "portland-me",
+      "label": "single city, ambiguous name (Maine)",
+      "tags": ["single-city", "ambiguous-pair"],
+      "expect": "plan",
+      "request": {
+        "route": ["Portland, ME"],
+        "days_per_stop": 2,
+        "travelers": 2,
+        "budget_usd": 600,
+        "meal_allowance_usd": 40,
+        "interests": ["food", "history"],
+        "start_in_days": 4
+      }
+    },
+    {
+      "trip_id": "springfield-il",
+      "label": "single city, ambiguous name (Illinois)",
+      "tags": ["single-city", "ambiguous-pair"],
+      "expect": "plan",
+      "request": {
+        "route": ["Springfield, IL"],
+        "days_per_stop": 2,
+        "travelers": 2,
+        "budget_usd": 600,
+        "meal_allowance_usd": 40,
+        "interests": ["history", "museums"],
+        "start_in_days": 5
+      }
+    },
+    {
+      "trip_id": "springfield-ma",
+      "label": "single city, ambiguous name (Massachusetts)",
+      "tags": ["single-city", "ambiguous-pair"],
+      "expect": "plan",
+      "request": {
+        "route": ["Springfield, MA"],
+        "days_per_stop": 2,
+        "travelers": 2,
+        "budget_usd": 600,
+        "meal_allowance_usd": 40,
+        "interests": ["museums", "food"],
+        "start_in_days": 6
+      }
+    },
+    {
+      "trip_id": "columbus-oh",
+      "label": "single city, ambiguous name (Ohio)",
+      "tags": ["single-city", "ambiguous-pair"],
+      "expect": "plan",
+      "request": {
+        "route": ["Columbus, OH"],
+        "days_per_stop": 2,
+        "travelers": 2,
+        "budget_usd": 600,
+        "meal_allowance_usd": 40,
+        "interests": ["food", "museums"],
+        "start_in_days": 7
+      }
+    },
+    {
+      "trip_id": "columbus-ga",
+      "label": "single city, ambiguous name (Georgia)",
+      "tags": ["single-city", "ambiguous-pair"],
+      "expect": "plan",
+      "request": {
+        "route": ["Columbus, GA"],
+        "days_per_stop": 2,
+        "travelers": 2,
+        "budget_usd": 600,
+        "meal_allowance_usd": 40,
+        "interests": ["history", "food"],
+        "start_in_days": 8
+      }
+    },
+    {
+      "trip_id": "kansas-city-mo",
+      "label": "single city, ambiguous name (Missouri)",
+      "tags": ["single-city", "ambiguous-pair"],
+      "expect": "plan",
+      "request": {
+        "route": ["Kansas City, MO"],
+        "days_per_stop": 2,
+        "travelers": 2,
+        "budget_usd": 600,
+        "meal_allowance_usd": 40,
+        "interests": ["food", "history"],
+        "start_in_days": 9
+      }
+    },
+    {
+      "trip_id": "kansas-city-ks",
+      "label": "single city, ambiguous name (Kansas)",
+      "tags": ["single-city", "ambiguous-pair"],
+      "expect": "plan",
+      "request": {
+        "route": ["Kansas City, KS"],
+        "days_per_stop": 2,
+        "travelers": 2,
+        "budget_usd": 600,
+        "meal_allowance_usd": 40,
+        "interests": ["museums", "history"],
+        "start_in_days": 10
+      }
+    },
+    {
+      "trip_id": "marfa-tx-small-town",
+      "label": "small town, few search results expected",
+      "tags": ["single-city", "small-town"],
+      "expect": "plan",
+      "request": {
+        "route": ["Marfa, TX"],
+        "days_per_stop": 2,
+        "travelers": 2,
+        "budget_usd": 400,
+        "meal_allowance_usd": 40,
+        "interests": ["museums", "food"],
+        "start_in_days": 5
+      }
+    },
+    {
+      "trip_id": "austin-tx-food-museums",
+      "label": "single city, two interests",
+      "tags": ["single-city", "interest-pair"],
+      "expect": "plan",
+      "request": {
+        "route": ["Austin, TX"],
+        "days_per_stop": 2,
+        "travelers": 2,
+        "budget_usd": 600,
+        "meal_allowance_usd": 40,
+        "interests": ["food", "museums"],
+        "start_in_days": 3
+      }
+    },
+    {
+      "trip_id": "nashville-tn-food-only",
+      "label": "single city, one interest (food)",
+      "tags": ["single-city", "interest-alone"],
+      "expect": "plan",
+      "request": {
+        "route": ["Nashville, TN"],
+        "days_per_stop": 2,
+        "travelers": 2,
+        "budget_usd": 500,
+        "meal_allowance_usd": 45,
+        "interests": ["food"],
+        "start_in_days": 6
+      }
+    },
+    {
+      "trip_id": "chicago-il-museums-only",
+      "label": "single city, one interest (museums)",
+      "tags": ["single-city", "interest-alone"],
+      "expect": "plan",
+      "request": {
+        "route": ["Chicago, IL"],
+        "days_per_stop": 2,
+        "travelers": 2,
+        "budget_usd": 700,
+        "meal_allowance_usd": 40,
+        "interests": ["museums"],
+        "start_in_days": 7
+      }
+    },
+    {
+      "trip_id": "portland-or-portland-me",
+      "label": "two city, both Portlands in one trip",
+      "tags": ["two-city", "ambiguous-combo"],
+      "expect": "plan",
+      "request": {
+        "route": ["Portland, OR", "Portland, ME"],
+        "days_per_stop": 2,
+        "travelers": 2,
+        "budget_usd": 1200,
+        "meal_allowance_usd": 45,
+        "interests": ["food", "museums"],
+        "start_in_days": 11
+      }
+    },
+    {
+      "trip_id": "philadelphia-richmond-history-only",
+      "label": "two city, one interest (history)",
+      "tags": ["two-city", "interest-alone"],
+      "expect": "plan",
+      "request": {
+        "route": ["Philadelphia, PA", "Richmond, VA"],
+        "days_per_stop": 2,
+        "travelers": 2,
+        "budget_usd": 900,
+        "meal_allowance_usd": 40,
+        "interests": ["history"],
+        "start_in_days": 4
+      }
+    },
+    {
+      "trip_id": "asheville-boone-hiking-only",
+      "label": "two city, one interest (hiking)",
+      "tags": ["two-city", "interest-alone"],
+      "expect": "plan",
+      "request": {
+        "route": ["Asheville, NC", "Boone, NC"],
+        "days_per_stop": 2,
+        "travelers": 2,
+        "budget_usd": 700,
+        "meal_allowance_usd": 40,
+        "interests": ["hiking"],
+        "start_in_days": 5
+      }
+    },
+    {
+      "trip_id": "denver-boulder-food-hiking",
+      "label": "two city, two interests (food, hiking)",
+      "tags": ["two-city", "interest-pair"],
+      "expect": "plan",
+      "request": {
+        "route": ["Denver, CO", "Boulder, CO"],
+        "days_per_stop": 2,
+        "travelers": 2,
+        "budget_usd": 900,
+        "meal_allowance_usd": 45,
+        "interests": ["food", "hiking"],
+        "start_in_days": 6
+      }
+    },
+    {
+      "trip_id": "dc-baltimore-museums-history",
+      "label": "two city, two interests (museums, history)",
+      "tags": ["two-city", "interest-pair"],
+      "expect": "plan",
+      "request": {
+        "route": ["Washington, DC", "Baltimore, MD"],
+        "days_per_stop": 2,
+        "travelers": 2,
+        "budget_usd": 900,
+        "meal_allowance_usd": 40,
+        "interests": ["museums", "history"],
+        "start_in_days": 7
+      }
+    },
+    {
+      "trip_id": "nyc-philly-all-interests",
+      "label": "two city, all four interests",
+      "tags": ["two-city", "interest-all"],
+      "expect": "plan",
+      "request": {
+        "route": ["New York, NY", "Philadelphia, PA"],
+        "days_per_stop": 2,
+        "travelers": 2,
+        "budget_usd": 1500,
+        "meal_allowance_usd": 50,
+        "interests": ["museums", "history", "hiking", "food"],
+        "start_in_days": 8
+      }
+    },
+    {
+      "trip_id": "san-diego-la-no-interests",
+      "label": "two city, no interests requested",
+      "tags": ["two-city", "interest-empty"],
+      "expect": "plan",
+      "request": {
+        "route": ["San Diego, CA", "Los Angeles, CA"],
+        "days_per_stop": 2,
+        "travelers": 2,
+        "budget_usd": 1200,
+        "meal_allowance_usd": 45,
+        "interests": [],
+        "start_in_days": 9
+      }
+    },
+    {
+      "trip_id": "seattle-tacoma-budget-tight",
+      "label": "two city, tight budget (V2 not reachable while unpriced)",
+      "tags": ["two-city", "budget-tight"],
+      "expect": "plan",
+      "request": {
+        "route": ["Seattle, WA", "Tacoma, WA"],
+        "days_per_stop": 2,
+        "travelers": 4,
+        "budget_usd": 150,
+        "meal_allowance_usd": 40,
+        "interests": ["food", "museums"],
+        "start_in_days": 10
+      }
+    },
+    {
+      "trip_id": "miami-orlando-budget-loose",
+      "label": "two city, loose budget (V2 not reachable while unpriced)",
+      "tags": ["two-city", "budget-loose"],
+      "expect": "plan",
+      "request": {
+        "route": ["Miami, FL", "Orlando, FL"],
+        "days_per_stop": 2,
+        "travelers": 2,
+        "budget_usd": 10000,
+        "meal_allowance_usd": 60,
+        "interests": ["food", "museums"],
+        "start_in_days": 12
+      }
+    },
+    {
+      "trip_id": "boston-providence-forecast-edge",
+      "label": "two city, start date straddles the forecast window edge",
+      "tags": ["two-city", "forecast-edge"],
+      "expect": "plan",
+      "request": {
+        "route": ["Boston, MA", "Providence, RI"],
+        "days_per_stop": 2,
+        "travelers": 2,
+        "budget_usd": 900,
+        "meal_allowance_usd": 40,
+        "interests": ["history", "food"],
+        "start_in_days": 14
+      }
+    },
+    {
+      "trip_id": "atlanta-savannah",
+      "label": "two city, general coverage",
+      "tags": ["two-city"],
+      "expect": "plan",
+      "request": {
+        "route": ["Atlanta, GA", "Savannah, GA"],
+        "days_per_stop": 2,
+        "travelers": 2,
+        "budget_usd": 800,
+        "meal_allowance_usd": 40,
+        "interests": ["history", "food"],
+        "start_in_days": 5
+      }
+    },
+    {
+      "trip_id": "salt-lake-city-park-city",
+      "label": "two city, general coverage",
+      "tags": ["two-city"],
+      "expect": "plan",
+      "request": {
+        "route": ["Salt Lake City, UT", "Park City, UT"],
+        "days_per_stop": 2,
+        "travelers": 2,
+        "budget_usd": 900,
+        "meal_allowance_usd": 40,
+        "interests": ["hiking", "museums"],
+        "start_in_days": 6
+      }
+    },
+    {
+      "trip_id": "texas-triangle",
+      "label": "three city, general coverage",
+      "tags": ["three-city"],
+      "expect": "plan",
+      "request": {
+        "route": ["Austin, TX", "San Antonio, TX", "Houston, TX"],
+        "days_per_stop": 2,
+        "travelers": 2,
+        "budget_usd": 1500,
+        "meal_allowance_usd": 45,
+        "interests": ["food", "museums"],
+        "start_in_days": 7
+      }
+    },
+    {
+      "trip_id": "minnesota-loop",
+      "label": "three city, general coverage",
+      "tags": ["three-city"],
+      "expect": "plan",
+      "request": {
+        "route": ["Minneapolis, MN", "St. Paul, MN", "Duluth, MN"],
+        "days_per_stop": 2,
+        "travelers": 2,
+        "budget_usd": 1400,
+        "meal_allowance_usd": 40,
+        "interests": ["museums", "hiking"],
+        "start_in_days": 8
+      }
+    },
+    {
+      "trip_id": "louisiana-food-history",
+      "label": "three city, two interests (food, history)",
+      "tags": ["three-city", "interest-pair"],
+      "expect": "plan",
+      "request": {
+        "route": ["New Orleans, LA", "Baton Rouge, LA", "Lafayette, LA"],
+        "days_per_stop": 2,
+        "travelers": 2,
+        "budget_usd": 1500,
+        "meal_allowance_usd": 50,
+        "interests": ["food", "history"],
+        "start_in_days": 9
+      }
+    },
+    {
+      "trip_id": "arizona-desert",
+      "label": "three city, general coverage",
+      "tags": ["three-city"],
+      "expect": "plan",
+      "request": {
+        "route": ["Phoenix, AZ", "Tucson, AZ", "Flagstaff, AZ"],
+        "days_per_stop": 2,
+        "travelers": 2,
+        "budget_usd": 1300,
+        "meal_allowance_usd": 40,
+        "interests": ["hiking", "history"],
+        "start_in_days": 10
+      }
+    },
+    {
+      "trip_id": "colorado-rockies",
+      "label": "three city, general coverage",
+      "tags": ["three-city"],
+      "expect": "plan",
+      "request": {
+        "route": ["Denver, CO", "Colorado Springs, CO", "Aspen, CO"],
+        "days_per_stop": 2,
+        "travelers": 2,
+        "budget_usd": 1600,
+        "meal_allowance_usd": 45,
+        "interests": ["hiking", "museums"],
+        "start_in_days": 11
+      }
+    },
+    {
+      "trip_id": "toronto-on-invalid",
+      "label": "invalid: well-formed 'City, ST' but not a US state",
+      "tags": ["invalid"],
+      "expect": "reject",
+      "request": {
+        "route": ["Toronto, ON"],
+        "days_per_stop": 2,
+        "travelers": 2,
+        "budget_usd": 600,
+        "meal_allowance_usd": 40,
+        "interests": ["museums"],
+        "start_in_days": 5
+      }
+    }
+  ]
+}

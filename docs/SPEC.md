@@ -72,6 +72,17 @@ those stops with indoor ones (museums, history, food), keep every other day unch
 then re-validate.
 
 ## Done means
-Metrics for N US trips, with and without the validator: pass rate, repairs per trip,
-tool calls per trip, average daily km, pricing coverage, estimated share, and the share
-of stops kept after a weather replan.
+Metrics for N US trips, across three arms scored by the same plain-Python validator --
+not "with and without the validator", since the validator scores every arm; what differs
+is what the model is asked to produce and whether failures are fed back to it:
+
+- A ("LLM only, unrepaired"): stop_mode="full", max_repairs=0. The model writes whole
+  stops; the validator scores them but nothing repairs them.
+- B ("ids, no repair"): arm C's own first attempt, read from its trace, not run again.
+- C ("full system"): stop_mode="ids", max_repairs=3.
+
+Reported per arm: pass rate, failures by rule, repairs per trip, tool calls per trip,
+average daily km, tokens and seconds per trip. Pricing coverage and estimated share are
+reported as 0.0 with a note, not measured, since src/pricing.py is a documented stub.
+No weather-replan metric is reported, since no replan function exists yet (see "Weather
+replan" above). See evals/results.md for the generated numbers.

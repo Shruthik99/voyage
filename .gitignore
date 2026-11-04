@@ -1,7 +1,7 @@
 .env
 .venv/
 __pycache__/
-traces/*.json
+traces/
 cache/
 .pytest_cache/
 .ruff_cache/

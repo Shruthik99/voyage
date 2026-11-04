@@ -61,3 +61,25 @@ Why: a retyped coordinate or source cannot be trusted, and ids make V5 structura
 Chose: code fetches 16 days of forecast per route city before the model runs, skips days with missing values, and explains each uncovered day from the dates Open-Meteo actually returned.
 Rejected: letting the model call get_forecast, and computing coverage from the machine's date.
 Why: two live bugs. Open-Meteo counts days from the destination's local date (Denver was a day behind), and the 16th day came back with a null temperature. Both passed the mocked tests.
+
+## Three arms, one shared tool phase
+Chose: a single gather() per trip (geocode, forecast, the tool-calling loop) backs two proposals,
+arm A (stop_mode="full", max_repairs=0) and arm C (stop_mode="ids", max_repairs=3). Each arm's
+trace adopts the gather's events, so it stays a self-contained record of the tool results every
+stop traces back to.
+Rejected: each arm running its own tool phase; persisting catalogs to disk across days.
+Why: a separate tool phase per arm would let the comparison differ in two variables at once
+(stop_mode and which places the model happened to find), and would make arm A a weaker, not
+fairer, baseline, since it would be handed a worse catalog than arm C. Persisting the registry
+across days would mean a later proposal reads tool results from a *previous* run, which breaks
+"every place carries source and source_id from a tool result in the current run" outright.
+
+## Arm B is read from arm C's trace, not run
+Chose: arm B ("ids, no repair") is arm C's own event stream, truncated at and including the
+first validation event -- not a separate LLM run.
+Rejected: running a third, independent stop_mode="ids" / max_repairs=0 conversation.
+Why: arm C's first proposal already is that conversation; running it again would spend tokens
+to answer a question the trace already answers, and would turn B-vs-C into two independent
+samples instead of the same first attempt with and without repair. The trade is that B and C
+are paired, not independent: fine for comparing them to each other, not for a significance
+claim that assumes independence.

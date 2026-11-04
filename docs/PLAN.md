@@ -14,6 +14,6 @@ AI trip planners generate detailed itineraries, but few verify them—wrong addr
 - [ ] Build trip validator (checks addresses, hours, routes)
 - [ ] Agent loop (LLM + tools interaction; Groq backend)
 - [ ] Weather-based replanning logic
-- [ ] Evaluation suite (correctness, robustness, edge cases)
+- [x] Evaluation suite (correctness, robustness, edge cases)
 - [ ] README & user documentation
 - [ ] (later) Map and PDF export, built fresh against the Itinerary model

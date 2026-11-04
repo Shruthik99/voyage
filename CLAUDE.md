@@ -28,7 +28,9 @@ traces/ (JSON run traces, gitignored), cache/ (API response cache, gitignored)
 
 ## Testing
 - Every module gets tests. Every bug fix adds a regression test.
-- Tests never call live APIs; use cached fixtures or mocks.
+- Tests never call live APIs; use cached fixtures or mocks. The evals/ runner is a script,
+  not a test, and calls live APIs by design; its own tests (tests/test_evals_*.py) are
+  dry-run only.
 - Run `uv run pytest` and `uv run ruff check .` before saying a task is done.
 
 ## Workflow

@@ -123,3 +123,31 @@ def test_trace_tool_call_accepts_optional_summary_and_error():
     event = trace.events[0]
     assert event["summary"] is None
     assert event["error"] is None
+
+
+def test_trace_llm_call_records_usage_tokens():
+    trace = Trace("run-usage", {})
+    trace.llm_call(
+        "propose",
+        model="openai/gpt-oss-120b",
+        has_tools=False,
+        has_schema=True,
+        duration_ms=5.0,
+        prompt_tokens=123,
+        completion_tokens=45,
+    )
+
+    event = trace.events[0]
+    assert event["prompt_tokens"] == 123
+    assert event["completion_tokens"] == 45
+
+
+def test_trace_llm_call_usage_defaults_to_none_when_not_given():
+    trace = Trace("run-usage-none", {})
+    trace.llm_call(
+        "tools", model="openai/gpt-oss-120b", has_tools=True, has_schema=False, duration_ms=5.0
+    )
+
+    event = trace.events[0]
+    assert event["prompt_tokens"] is None
+    assert event["completion_tokens"] is None

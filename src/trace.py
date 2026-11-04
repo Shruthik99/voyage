@@ -93,6 +93,8 @@ class Trace:
         has_schema: bool,
         reasoning_chars: int = 0,
         duration_ms: float,
+        prompt_tokens: int | None = None,
+        completion_tokens: int | None = None,
     ) -> None:
         self._add(
             "llm_call",
@@ -102,6 +104,8 @@ class Trace:
             has_schema=has_schema,
             reasoning_chars=reasoning_chars,
             duration_ms=round(duration_ms, 1),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
         )
 
     def validation(self, attempt: int, report: ValidationReport) -> None:

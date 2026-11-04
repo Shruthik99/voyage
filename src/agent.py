@@ -276,18 +276,25 @@ def _execute_tool(
 
     if name == "geocode":
         registry.record_point(call_args["city_state"], result)
-        payload = {
-            "city": result.city,
-            "state": result.state,
-            "lat": result.lat,
-            "lon": result.lon,
-        }
+        payload = {"lat": result.lat, "lon": result.lon}
     elif name == "search_places":
+        # Full place records (with source_id, lat/lon) go into the catalog the
+        # proposal phase reads from the registry; the tool phase only needs to
+        # know enough to decide whether to search again.
         registry.record_places(call_args["city_state"], result)
-        payload = {"places": [_place_summary(p) for p in result[:SEARCH_LIMIT]]}
+        payload = {
+            "found": len(result),
+            "interest": call_args.get("interest"),
+            "sample": [p.name for p in result[:3]],
+        }
     else:  # get_forecast
         registry.record_forecast(call_args["city_state"], result)
-        payload = {"days": len(result)}
+        payload = {
+            "days": [
+                {"date": f.date.isoformat(), "high_f": f.high_f, "rain_chance": f.rain_chance}
+                for f in result
+            ]
+        }
 
     return payload, None
 
@@ -436,6 +443,13 @@ def _tool_phase_messages(request: TripRequest) -> list[dict]:
     ]
 
 
+def _usage_tokens(response) -> tuple[int | None, int | None]:
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return None, None
+    return usage.prompt_tokens, usage.completion_tokens
+
+
 def _skeleton_payload(skeleton: list[tuple[date, str]]) -> list[dict]:
     return [{"day": i + 1, "date": d.isoformat(), "city": c} for i, (d, c) in enumerate(skeleton)]
 
@@ -515,6 +529,7 @@ def _run_tool_phase(
         duration_ms = (time.monotonic() - start) * 1000
         message = response.choices[0].message
         reasoning = getattr(message, "reasoning", None) or ""
+        prompt_tokens, completion_tokens = _usage_tokens(response)
         trace.llm_call(
             "tools",
             model=model,
@@ -522,6 +537,8 @@ def _run_tool_phase(
             has_schema=False,
             reasoning_chars=len(reasoning),
             duration_ms=duration_ms,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
         )
 
         tool_calls = getattr(message, "tool_calls", None) or []
@@ -633,6 +650,7 @@ def _run_proposal_phase(
         duration_ms = (time.monotonic() - start) * 1000
         message = response.choices[0].message
         reasoning = getattr(message, "reasoning", None) or ""
+        prompt_tokens, completion_tokens = _usage_tokens(response)
         trace.llm_call(
             phase,
             model=model,
@@ -640,6 +658,8 @@ def _run_proposal_phase(
             has_schema=True,
             reasoning_chars=len(reasoning),
             duration_ms=duration_ms,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
         )
 
         content = message.content

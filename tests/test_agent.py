@@ -101,16 +101,17 @@ class FakeClient:
         return self.chat.completions.calls
 
 
-def _completion(message: dict) -> ChatCompletion:
-    return ChatCompletion.model_validate(
-        {
-            "id": "chatcmpl-test",
-            "object": "chat.completion",
-            "created": 0,
-            "model": "m",
-            "choices": [{"index": 0, "finish_reason": "stop", "message": message}],
-        }
-    )
+def _completion(message: dict, usage: dict | None = None) -> ChatCompletion:
+    data = {
+        "id": "chatcmpl-test",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "m",
+        "choices": [{"index": 0, "finish_reason": "stop", "message": message}],
+    }
+    if usage is not None:
+        data["usage"] = usage
+    return ChatCompletion.model_validate(data)
 
 
 def _tool_call_message(calls: list[tuple[str, dict]]) -> ChatCompletion:
@@ -689,6 +690,114 @@ def test_execute_tool_unexpected_keyword_argument_is_reported_not_raised():
     )
     assert payload == {}
     assert error is not None
+
+
+def test_search_places_tool_message_is_compact_but_registry_keeps_all(monkeypatch):
+    places = [_place(source_id=f"p{i}", name=f"Place {i}") for i in range(20)]
+
+    def fake_search_places(city_state, interest, limit, client=None):
+        return places
+
+    monkeypatch.setitem(agent_module.TOOL_FUNCTIONS, "search_places", fake_search_places)
+    registry = PlaceRegistry()
+
+    payload, error = _execute_tool(
+        "search_places",
+        {"city_state": "Austin, TX", "interest": "museums", "limit": None},
+        registry,
+        None,
+    )
+
+    assert error is None
+    content = json.dumps(payload)
+    assert "source_id" not in content
+    assert "lat" not in content
+    assert len(content) < 600
+    assert payload == {"found": 20, "interest": "museums", "sample": ["Place 0", "Place 1", "Place 2"]}
+    assert len(registry.tool_results) == 20
+
+
+def test_geocode_tool_message_has_only_lat_lon(monkeypatch):
+    registry = PlaceRegistry()
+
+    def fake_geocode(city_state, client=None):
+        return GeoPoint(city="Austin", state="TX", lat=30.0, lon=-97.0)
+
+    monkeypatch.setitem(agent_module.TOOL_FUNCTIONS, "geocode", fake_geocode)
+
+    payload, error = _execute_tool("geocode", {"city_state": "Austin, TX"}, registry, None)
+
+    assert error is None
+    assert payload == {"lat": 30.0, "lon": -97.0}
+
+
+def test_get_forecast_tool_message_has_date_high_and_rain_chance_per_day(monkeypatch):
+    from datetime import date as _date
+
+    from src.models import ForecastDay
+
+    forecasts = [
+        ForecastDay(date=_date(2026, 11, 3), rain_chance=0.2, high_f=75.0, source="open-meteo"),
+        ForecastDay(date=_date(2026, 11, 4), rain_chance=0.5, high_f=70.0, source="open-meteo"),
+    ]
+
+    def fake_get_forecast(city_state, days, client=None):
+        return forecasts
+
+    monkeypatch.setitem(agent_module.TOOL_FUNCTIONS, "get_forecast", fake_get_forecast)
+    registry = PlaceRegistry()
+
+    payload, error = _execute_tool(
+        "get_forecast", {"city_state": "Austin, TX", "days": 2}, registry, None
+    )
+
+    assert error is None
+    assert payload == {
+        "days": [
+            {"date": "2026-11-03", "high_f": 75.0, "rain_chance": 0.2},
+            {"date": "2026-11-04", "high_f": 70.0, "rain_chance": 0.5},
+        ]
+    }
+
+
+def test_proposal_prompt_still_contains_the_full_catalog():
+    registry = PlaceRegistry()
+    places = [_place(source_id=f"p{i}", name=f"P{i}") for i in range(5)]
+    registry.record_places("Austin, TX", places)
+    skeleton = [(date(2026, 11, 3), "Austin, TX")]
+
+    messages = agent_module._initial_proposal_messages(_request(), skeleton, registry, "ids")
+    content = messages[1]["content"]
+
+    assert "source_id" in content
+    assert "lat" in content
+    assert "p0" in content and "p4" in content
+
+
+def test_plan_trip_records_usage_tokens_in_trace(tmp_path):
+    handler = make_handler(places_json=TWO_MUSEUMS)
+    client = FakeClient(
+        [
+            _tool_call_message(
+                [("search_places", {"city_state": "Austin, TX", "interest": "museums"})]
+            ),
+            _no_tool_calls(),
+            _completion(
+                {"role": "assistant", "content": json.dumps({"days": [{"day": 1, "stop_ids": ["p1", "p2"]}]})},
+                usage={"prompt_tokens": 111, "completion_tokens": 22, "total_tokens": 133},
+            ),
+        ]
+    )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        result = plan_trip(_request(), client=client, http_client=http_client, trace_dir=tmp_path)
+
+    data = json.loads(result.trace_path.read_text(encoding="utf-8"))
+    llm_events = [e for e in data["events"] if e["kind"] == "llm_call"]
+    assert llm_events[0]["prompt_tokens"] is None  # the first tool-phase call carried no usage
+    propose_event = next(e for e in llm_events if e["phase"] == "propose")
+    assert propose_event["prompt_tokens"] == 111
+    assert propose_event["completion_tokens"] == 22
 
 
 def test_execute_tool_null_limit_uses_search_limit_default(monkeypatch):

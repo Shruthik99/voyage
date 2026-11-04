@@ -1,5 +1,5 @@
 import json
-from datetime import date
+from datetime import date, timedelta
 
 import httpx
 import pytest
@@ -23,6 +23,7 @@ from src.agent import (
     _failure_payload,
     plan_trip,
 )
+from src.constants import FORECAST_MAX_DAYS
 from src.models import GeoPoint, Place, RuleResult
 from src.validator import validate
 
@@ -819,3 +820,153 @@ def test_execute_tool_null_limit_uses_search_limit_default(monkeypatch):
 
     assert error is None
     assert captured["limit"] == agent_module.SEARCH_LIMIT
+
+
+# --- Weather: forecasts are plain Python's job, not the model's ---
+
+FIXED_TODAY = date(2026, 11, 4)
+
+
+def _patch_today(monkeypatch, today: date = FIXED_TODAY) -> None:
+    monkeypatch.setattr(tools_module, "_today", lambda: today)
+
+
+def _forecast_json(start: date, n: int) -> dict:
+    dates = [(start + timedelta(days=i)).isoformat() for i in range(n)]
+    return {
+        "daily": {
+            "time": dates,
+            "temperature_2m_max": [70.0] * n,
+            "precipitation_probability_max": [10.0] * n,
+        }
+    }
+
+
+def test_tool_schemas_exclude_get_forecast():
+    names = {schema["function"]["name"] for schema in agent_module.TOOL_SCHEMAS}
+    assert names == {"geocode", "search_places"}
+
+
+def test_forecast_fetched_for_every_route_city_before_first_model_call(tmp_path, monkeypatch):
+    _patch_today(monkeypatch)
+    handler = make_handler(places_json=TWO_MUSEUMS)
+    client = FakeClient(
+        [
+            _tool_call_message([("search_places", {"city_state": "Austin, TX", "interest": "museums"})]),
+            _no_tool_calls(),
+            _proposal_message({"days": [{"day": 1, "stop_ids": ["p1", "p2"]}]}),
+        ]
+    )
+
+    real_get_forecast = tools_module.get_forecast
+
+    def spy_get_forecast(*args, **kwargs):
+        assert client.calls == []  # forecast fetched before any model call
+        return real_get_forecast(*args, **kwargs)
+
+    monkeypatch.setattr(tools_module, "get_forecast", spy_get_forecast)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        plan_trip(_request(start_date=FIXED_TODAY), client=client, http_client=http_client, trace_dir=tmp_path)
+
+
+def test_plan_trip_forecast_present_for_every_day_within_window(tmp_path, monkeypatch):
+    _patch_today(monkeypatch)
+    handler = make_handler(forecast_json=_forecast_json(FIXED_TODAY, 3))
+    client = FakeClient(
+        [
+            _no_tool_calls(),
+            _proposal_message(
+                {"days": [{"day": i, "stop_ids": []} for i in range(1, 4)]}
+            ),
+        ]
+    )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        result = plan_trip(
+            _request(days_per_stop=3, start_date=FIXED_TODAY),
+            client=client,
+            http_client=http_client,
+            trace_dir=tmp_path,
+            max_repairs=0,
+        )
+
+    assert len(result.itinerary.days) == 3
+    for day in result.itinerary.days:
+        assert day.forecast is not None
+        assert day.warnings == []
+
+
+def test_plan_trip_day_beyond_forecast_window_gets_window_warning_not_unverified(tmp_path, monkeypatch):
+    _patch_today(monkeypatch)
+    handler = make_handler(forecast_json=_forecast_json(FIXED_TODAY, FORECAST_MAX_DAYS))
+    days_per_stop = FORECAST_MAX_DAYS + 4
+    proposal_days = [{"day": i, "stop_ids": []} for i in range(1, days_per_stop + 1)]
+    client = FakeClient([_no_tool_calls(), _proposal_message({"days": proposal_days})])
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        result = plan_trip(
+            _request(days_per_stop=days_per_stop, start_date=FIXED_TODAY),
+            client=client,
+            http_client=http_client,
+            trace_dir=tmp_path,
+            max_repairs=0,
+        )
+
+    last_in_window = result.itinerary.days[FORECAST_MAX_DAYS - 1]
+    assert last_in_window.warnings == []
+    assert last_in_window.forecast is not None
+
+    first_beyond_window = result.itinerary.days[FORECAST_MAX_DAYS]
+    assert first_beyond_window.forecast is None
+    assert len(first_beyond_window.warnings) == 1
+    assert f"outside the forecast window ({FORECAST_MAX_DAYS} days)" in first_beyond_window.warnings[0]
+    assert "Austin, TX" in first_beyond_window.warnings[0]
+
+
+def test_plan_trip_forecast_failure_adds_unavailable_warning_and_completes(tmp_path, monkeypatch):
+    _patch_today(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if "geocode/search" in url:
+            return _geocode_response(request)
+        if "open-meteo" in url:
+            return httpx.Response(500, text="boom")
+        return httpx.Response(200, json={"features": []})
+
+    client = FakeClient([_no_tool_calls(), _proposal_message({"days": [{"day": 1, "stop_ids": []}]})])
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        result = plan_trip(
+            _request(start_date=FIXED_TODAY),
+            client=client,
+            http_client=http_client,
+            trace_dir=tmp_path,
+            max_repairs=0,
+        )
+
+    assert any("weather unavailable for Austin, TX" in w for w in result.itinerary.warnings)
+    day = result.itinerary.days[0]
+    assert day.forecast is None
+    assert len(day.warnings) == 1
+    assert "weather unavailable for Austin, TX" in day.warnings[0]
+
+
+def test_plan_trip_past_trip_date_gets_past_date_warning(tmp_path, monkeypatch):
+    _patch_today(monkeypatch, today=date(2026, 11, 10))
+    handler = make_handler()
+    client = FakeClient([_no_tool_calls(), _proposal_message({"days": [{"day": 1, "stop_ids": []}]})])
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        result = plan_trip(
+            _request(start_date=date(2026, 11, 5)),
+            client=client,
+            http_client=http_client,
+            trace_dir=tmp_path,
+            max_repairs=0,
+        )
+
+    day = result.itinerary.days[0]
+    assert day.warnings == ["date is in the past"]
+    assert day.forecast is None

@@ -20,3 +20,6 @@ MAX_STOPS = 5
 # Weather replan: rain_chance at or above this swaps a day's outdoor stops.
 # Percent, matching ForecastDay.rain_chance (open-meteo precipitation_probability_max).
 RAIN_THRESHOLD = 50.0
+
+# Open-Meteo's own cap on forecast_days; the agent never asks for more than this.
+FORECAST_MAX_DAYS = 16

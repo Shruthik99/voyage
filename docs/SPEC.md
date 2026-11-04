@@ -27,11 +27,12 @@ V1 Location: each stop's state matches its day's city state (a None state falls 
    the distance check and adds a warning), and the stop is within RADIUS_KM of the
    city's geocoded point.
 V2 Budget, with S_low and S_high the group totals of cost_low and cost_high:
+   unpriced: no stop has a known cost (warning; the budget is not checked)
    incomplete: any stop's cost is unknown (warning, lists the stops)
    over budget: S_low > budget_usd (fail)
    uncertain: S_low <= budget_usd < S_high (pass with warning)
-   within budget: S_high <= budget_usd (pass; labeled "within estimated budget" unless
-   estimated_share is 0)
+   within budget: S_high <= budget_usd (pass; code within_estimated when
+   estimated_share is above 0, within otherwise)
 V3 Interests: every requested interest has at least one stop in the trip.
 V4 No placeholders: name, source and source_id are non-empty.
 V5 Traceability: every (source, source_id) appears in a tool result from this run.
@@ -42,9 +43,19 @@ V8 Day size: each day has between MIN_STOPS and MAX_STOPS stops.
 ## Agent behavior
 Tools: geocode, search_places, get_forecast. The LLM chooses tools and proposes the
 itinerary; the validator and a plain-Python pricing step produce the numbers. The LLM
-never supplies prices. On failure, failures go back to the LLM. Maximum 3 repair
-attempts, then return the result flagged unverified. Every tool call and validator
+never supplies prices. On failure, the failing results go back to the LLM. Maximum 3
+repair attempts, then return the result flagged unverified. Every tool call and validator
 result is written to a JSON trace.
+
+Two phases, not one loop: Groq rejects tools and response_format in the same request
+("json mode cannot be combined with tool/function calling"), and gpt-oss-120b does not
+call tools in parallel. So the run is a tool-calling phase (tools, no schema) followed by
+a proposal phase (strict json_schema, no tools). Repairs reuse the proposal phase.
+
+Plain Python, not the LLM, expands route x days_per_stop into dated days from start_date.
+The LLM fills stops per day number. It names places by source_id; the code resolves each
+id to the Place recorded from the tool result, so a stop's coordinates and address are
+never retyped by a model. An id that was never returned is reported, never invented.
 
 ## Weather replan
 If a day's rain_chance >= RAIN_THRESHOLD and it has outdoor (hiking) stops, replace only

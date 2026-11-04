@@ -159,6 +159,7 @@ def _group_cents(stop: Stop, travelers: int) -> tuple[int, int] | None:
 
 def _cost_totals(itinerary: Itinerary, context: ValidationContext) -> dict:
     low_cents = high_cents = estimate_high_cents = 0
+    priced_count = 0
     unknown: list[tuple[int, int, Stop]] = []
 
     for di, day in enumerate(itinerary.days):
@@ -167,6 +168,7 @@ def _cost_totals(itinerary: Itinerary, context: ValidationContext) -> dict:
             if group is None:
                 unknown.append((di, si, stop))
                 continue
+            priced_count += 1
             low, high = group
             low_cents += low
             high_cents += high
@@ -179,6 +181,7 @@ def _cost_totals(itinerary: Itinerary, context: ValidationContext) -> dict:
         "low_cents": low_cents,
         "high_cents": high_cents,
         "unknown": unknown,
+        "priced_count": priced_count,
         "estimated_share": share,
         "unknown_count": len(unknown),
     }
@@ -189,14 +192,22 @@ def _check_v2(context: ValidationContext, totals: dict) -> list[RuleResult]:
     low, high = totals["low_cents"], totals["high_cents"]
     share = totals["estimated_share"]
 
-    if low > budget_cents:
+    if totals["priced_count"] == 0:
+        # First, so it can never be masked: with nothing priced, S_low and S_high
+        # are both 0, which would otherwise read as a comfortable "within budget".
+        # Keyed on priced_count rather than unknown_count so an itinerary with no
+        # stops at all lands here too, instead of passing on a $0.00 total.
+        code, status = "unpriced", "warn"
+        message = "budget not checked: no stop has a known cost"
+    elif low > budget_cents:
         code, status = "over", "fail"
         message = (
             f"over budget: ${low / 100:,.2f} at the low end exceeds ${context.budget_usd:,.2f}"
         )
     elif high <= budget_cents:
-        code, status = "within", "pass"
-        label = "within estimated budget" if share > 0 else "within budget"
+        estimated = share > 0
+        code, status = ("within_estimated" if estimated else "within"), "pass"
+        label = "within estimated budget" if estimated else "within budget"
         message = f"{label}: ${high / 100:,.2f} at the high end fits ${context.budget_usd:,.2f}"
     else:
         code, status = "uncertain", "warn"

@@ -288,7 +288,9 @@ def test_v2_budget_all_costs_unknown_warns_and_does_not_fail():
         [_day(_stops(2, cost_low_usd=None, cost_high_usd=None, cost_confidence="unknown"))]
     )
     report = validate(itinerary, _context(itinerary, budget_usd=100.0))
-    assert _summary_for(report, "V2").status == "pass"
+    summary = _summary_for(report, "V2")
+    assert (summary.code, summary.status) == ("unpriced", "warn")
+    assert "budget not checked" in summary.message
     assert report.unknown_count == 2
     assert report.ok is True
 
@@ -320,8 +322,10 @@ def test_v2_budget_estimated_share_zero_labels_within_budget():
 def test_v2_budget_estimated_share_nonzero_labels_within_estimated_budget():
     itinerary = _itinerary([_day(_stops(2, cost_confidence="estimate"))])
     report = validate(itinerary, _context(itinerary, budget_usd=100.0))
+    summary = _summary_for(report, "V2")
     assert report.estimated_share == 1.0
-    assert "within estimated budget" in _summary_for(report, "V2").message
+    assert summary.code == "within_estimated"
+    assert "within estimated budget" in summary.message
 
 
 def test_v2_budget_estimated_share_is_dollar_weighted():
@@ -354,6 +358,62 @@ def test_v2_cost_summary_mismatch_warns():
     itinerary = _itinerary([_day(_stops(2, cost_confidence="estimate"))], estimated_share=0.0)
     report = validate(itinerary, _context(itinerary, budget_usd=100.0))
     assert "cost_summary_mismatch" in _codes(report, "V2")
+
+
+# --- V2 unpriced: a trip nobody priced is unchecked, not "within budget" ---
+
+UNPRICED = {"cost_low_usd": None, "cost_high_usd": None, "cost_confidence": "unknown"}
+
+
+def test_v2_unpriced_when_no_stop_has_a_known_cost():
+    itinerary = _itinerary([_day(_stops(2, **UNPRICED))])
+    report = validate(itinerary, _context(itinerary, budget_usd=100.0))
+    summary = _summary_for(report, "V2")
+    assert (summary.code, summary.status) == ("unpriced", "warn")
+    assert "budget not checked" in summary.message
+
+
+def test_v2_one_known_cost_is_not_unpriced():
+    # The boundary: unpriced must not swallow the mixed case, or a single priced
+    # stop in a 20-stop trip would stop reporting against the budget at all.
+    itinerary = _itinerary([_day([_stop(source_id="p1"), _stop(source_id="p2", **UNPRICED)])])
+    report = validate(itinerary, _context(itinerary, budget_usd=100.0))
+    summary = _summary_for(report, "V2")
+    assert (summary.code, summary.status) == ("within", "pass")
+    assert "incomplete" in _codes(report, "V2")
+
+
+def test_v2_unpriced_with_zero_budget_does_not_report_within():
+    # The quietest wrong answer under the old branch: 0 > 0 is false and 0 <= 0
+    # is true, so a $0 budget with nothing priced passed as "within budget".
+    itinerary = _itinerary([_day(_stops(2, **UNPRICED))])
+    report = validate(itinerary, _context(itinerary, budget_usd=0.0))
+    assert _summary_for(report, "V2").code == "unpriced"
+
+
+def test_v2_empty_itinerary_is_unpriced_not_within():
+    itinerary = _itinerary([])
+    report = validate(itinerary, _context(budget_usd=100.0))
+    assert _summary_for(report, "V2").code == "unpriced"
+    assert _summary_for(report, "V8").status == "fail"  # V8 still owns the real failure
+
+
+def test_v2_within_estimated_survives_an_unknown_stop():
+    # within_estimated needs at least one known cost and share > 0; an unpriced
+    # stop alongside it is an incomplete warning, not a downgrade to unpriced.
+    itinerary = _itinerary(
+        [
+            _day(
+                [
+                    _stop(source_id="p1", cost_confidence="estimate"),
+                    _stop(source_id="p2", **UNPRICED),
+                ]
+            )
+        ]
+    )
+    report = validate(itinerary, _context(itinerary, budget_usd=100.0))
+    assert _summary_for(report, "V2").code == "within_estimated"
+    assert "incomplete" in _codes(report, "V2")
 
 
 # --- V3 Interests ---

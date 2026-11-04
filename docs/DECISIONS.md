@@ -46,3 +46,18 @@ Why: no persistent state is needed until the scheduler, and the cache protects f
 Chose: live weather (NWS or Open-Meteo); closures injected as labeled test events.
 Rejected: implying live closure feeds.
 Why: no free API reports surprise closures, so honesty about the simulation matters more.
+
+## Two-phase LLM calls, forced by Groq
+Chose: a tool-calling phase (tools, no schema), then a proposal phase (strict json_schema, no tools).
+Rejected: one request that does both.
+Why: Groq returns HTTP 400 ("json mode cannot be combined with tool/function calling"), and gpt-oss-120b does not call tools in parallel. Checked by hand against the live API.
+
+## The LLM names place ids; code builds the stops
+Chose: the model returns source_ids from a catalog, and code fills in coordinates, address and state from the tool result. stop_mode="full" lets the model write whole stops, for the eval baseline only.
+Rejected: the model writing stops.
+Why: a retyped coordinate or source cannot be trusted, and ids make V5 structurally true. The baseline arm still shows what an unvalidated planner does.
+
+## Weather is fetched by code and judged by the dates returned
+Chose: code fetches 16 days of forecast per route city before the model runs, skips days with missing values, and explains each uncovered day from the dates Open-Meteo actually returned.
+Rejected: letting the model call get_forecast, and computing coverage from the machine's date.
+Why: two live bugs. Open-Meteo counts days from the destination's local date (Denver was a day behind), and the 16th day came back with a null temperature. Both passed the mocked tests.

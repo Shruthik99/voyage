@@ -41,7 +41,7 @@ V7 No duplicates: a source_id appears at most once in the trip.
 V8 Day size: each day has between MIN_STOPS and MAX_STOPS stops.
 
 ## Agent behavior
-Tools: geocode, search_places, get_forecast. The LLM chooses tools and proposes the
+Tools the LLM may call: geocode, search_places. The LLM chooses tools and proposes the
 itinerary; the validator and a plain-Python pricing step produce the numbers. The LLM
 never supplies prices. On failure, the failing results go back to the LLM. Maximum 3
 repair attempts, then return the result flagged unverified. Every tool call and validator
@@ -56,6 +56,15 @@ Plain Python, not the LLM, expands route x days_per_stop into dated days from st
 The LLM fills stops per day number. It names places by source_id; the code resolves each
 id to the Place recorded from the tool result, so a stop's coordinates and address are
 never retyped by a model. An id that was never returned is reported, never invented.
+
+Before any LLM call, plain Python geocodes every route city. A city that cannot be
+geocoded stops the run with an error: without a city point V1 cannot be checked, and
+the city cannot be searched.
+
+Weather is also plain Python. The 16-day forecast is fetched for every route city before
+the LLM runs, and days with missing values are skipped. Each day without a forecast says
+why: outside the forecast window, before the first returned date, fetch failed, or
+missing inside the range. Weather never stops a run.
 
 ## Weather replan
 If a day's rain_chance >= RAIN_THRESHOLD and it has outdoor (hiking) stops, replace only

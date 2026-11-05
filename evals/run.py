@@ -130,11 +130,13 @@ def _base_row(trip_id: str, arm: str, *, model: str, reasoning_effort: str | Non
     }
 
 
-def _placeholder_row(trip_id, arm, *, outcome: str, model, reasoning_effort, message: str) -> dict:
+def _placeholder_row(
+    trip_id, arm, *, outcome: str, model, reasoning_effort, message: str, tokens_billed: int = 0
+) -> dict:
     return {
         **_base_row(trip_id, arm, model=model, reasoning_effort=reasoning_effort),
         "outcome": outcome,
-        "tokens_billed": 0,
+        "tokens_billed": tokens_billed,
         "error": scrub(message),
         **_ZERO_METRICS,
     }
@@ -211,10 +213,23 @@ def _process_trip(
         )
     except (AgentError, LLMError) as exc:
         message = str(exc)
+        # Nobody has produced a result yet, but the gather itself may have
+        # spent real tokens before it failed -- bill them to whichever arm
+        # would normally have absorbed the gather's cost (C by default, A if
+        # C is not running this session), never to 0.
+        gather_tokens = metrics_module.row_from_trace(gather_trace.to_dict(), arm="gather")["tokens_total"]
+        billed_to = "C" if need_c else ("A" if need_a else None)
         for arm in ARMS:
             if (trip_id, arm) in done and not args.force:
                 continue
-            write(arm, _placeholder_row(trip_id, arm, outcome="error", model=model, reasoning_effort=reasoning_effort, message=message))
+            tokens_billed = gather_tokens if arm == billed_to else 0
+            write(
+                arm,
+                _placeholder_row(
+                    trip_id, arm, outcome="error", model=model, reasoning_effort=reasoning_effort,
+                    message=message, tokens_billed=tokens_billed,
+                ),
+            )
         return wrote_any
 
     if need_c:
@@ -230,8 +245,18 @@ def _process_trip(
             c_trace.finish("error")
             c_trace.write(trace_dir)
             message = str(exc)
+            # c_trace already carries the adopted gather events, so its total
+            # is every token spent on this trip so far, partial proposal/repair
+            # attempts included -- never 0 just because the run ended in error.
+            c_tokens = metrics_module.row_from_trace(c_trace.to_dict(), arm="C")["tokens_total"]
             if args.force or (trip_id, "C") not in done:
-                write("C", _placeholder_row(trip_id, "C", outcome="error", model=model, reasoning_effort=reasoning_effort, message=message))
+                write(
+                    "C",
+                    _placeholder_row(
+                        trip_id, "C", outcome="error", model=model, reasoning_effort=reasoning_effort,
+                        message=message, tokens_billed=c_tokens,
+                    ),
+                )
             if args.force or (trip_id, "B") not in done:
                 write("B", _placeholder_row(trip_id, "B", outcome="error", model=model, reasoning_effort=reasoning_effort, message=message))
         else:
@@ -260,7 +285,17 @@ def _process_trip(
         except (AgentError, LLMError) as exc:
             a_trace.finish("error")
             a_trace.write(trace_dir)
-            write("A", _placeholder_row(trip_id, "A", outcome="error", model=model, reasoning_effort=reasoning_effort, message=str(exc)))
+            # Same split as the success path below: A bills its own attempt,
+            # plus the gather only if C did not already bill it this session.
+            a_metrics_partial = metrics_module.row_from_trace(a_trace.to_dict(), arm="A")
+            billed_a = a_metrics_partial["tokens_arm"] + (0 if need_c else a_metrics_partial["tokens_gather"])
+            write(
+                "A",
+                _placeholder_row(
+                    trip_id, "A", outcome="error", model=model, reasoning_effort=reasoning_effort,
+                    message=str(exc), tokens_billed=billed_a,
+                ),
+            )
         else:
             a_trace.finish(
                 "ok" if result.report.ok else "unverified",

@@ -24,7 +24,7 @@ from src.agent import (
     plan_trip,
 )
 from src.constants import FORECAST_MAX_DAYS
-from src.llm import LLMError
+from src.llm import LLMError, LLMUnavailable
 from src.models import GeoPoint, Place, RuleResult
 from src.trace import Trace
 from src.validator import validate
@@ -394,6 +394,153 @@ def test_plan_trip_all_malformed_raises_agent_error(tmp_path):
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as http_client, pytest.raises(AgentError):
         plan_trip(_request(), client=client, http_client=http_client, trace_dir=tmp_path)
+
+
+# --- 6b. A Groq 400 ("empty generation") on the proposal call ---
+#
+# Evidence: a live campaign trip got a Groq 400 "Generated JSON does not match
+# the expected schema" on a repair call, after two repairs had already
+# succeeded. That 400 surfaces as LLMError out of llm.chat -- before this fix
+# it was never retried (it bypassed the parse-retry budget entirely) and
+# propagated straight past the repair loop, turning a trip that already had a
+# built, validated-enough itinerary into a hard failure.
+
+
+def test_plan_trip_repair_llm_error_exhausted_falls_back_to_last_parsed_proposal(tmp_path):
+    handler = make_handler(places_json=TWO_MUSEUMS)
+    too_few = _proposal_message({"days": [{"day": 1, "stop_ids": ["p1"]}]})  # fails MIN_STOPS
+    schema_rejected = LLMError("groq 400: Generated JSON does not match the expected schema")
+    client = FakeClient(
+        [
+            _tool_call_message([("search_places", {"city_state": "Austin, TX", "interest": "museums"})]),
+            _no_tool_calls(),
+            too_few,  # initial proposal: parses, fails validation -> repair 1
+            too_few,  # repair 1: parses, still fails -> repair 2
+            too_few,  # repair 2: parses, still fails -> repair 3
+            schema_rejected,  # repair 3, attempt 1
+            schema_rejected,  # repair 3, attempt 2 (parse-retry budget)
+            schema_rejected,  # repair 3, attempt 3 (budget exhausted) -> caught, fall back
+        ]
+    )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        result = plan_trip(_request(), client=client, http_client=http_client, trace_dir=tmp_path)
+
+    assert result.report.ok is False
+    assert result.itinerary.verified is False
+    assert result.repairs == 2  # repair 3 never completed
+    assert len(result.itinerary.days[0].stops) == 1  # repair 2's proposal, the last one that parsed
+    assert any("repair 3 failed" in w for w in result.itinerary.warnings)
+
+    # The 400 drew from the same parse-retry budget as bad JSON: 3 attempts
+    # for repair 3, not an immediate, unretried failure.
+    proposal_calls = [c for c in client.calls if "response_format" in c]
+    assert len(proposal_calls) == 6
+
+
+def test_plan_trip_initial_proposal_llm_error_exhausted_still_raises_agent_error(tmp_path):
+    """Only a repair falls back; a first proposal that never parses still raises."""
+    handler = make_handler(places_json=TWO_MUSEUMS)
+    schema_rejected = LLMError("groq 400: Generated JSON does not match the expected schema")
+    client = FakeClient(
+        [
+            _tool_call_message([("search_places", {"city_state": "Austin, TX", "interest": "museums"})]),
+            _no_tool_calls(),
+            schema_rejected,
+            schema_rejected,
+            schema_rejected,
+        ]
+    )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client, pytest.raises(AgentError):
+        plan_trip(_request(), client=client, http_client=http_client, trace_dir=tmp_path)
+
+    # Retried up to the parse-retry budget before giving up, not on the first try.
+    proposal_calls = [c for c in client.calls if "response_format" in c]
+    assert len(proposal_calls) == 3
+
+
+# --- 6c. Only a schema-rejection LLMError draws from the parse-retry budget ---
+
+
+def test_plan_trip_schema_rejection_is_retried_then_succeeds(tmp_path):
+    handler = make_handler(places_json=TWO_MUSEUMS)
+    schema_rejected = LLMError("groq 400: Generated JSON does not match the expected schema")
+    client = FakeClient(
+        [
+            _tool_call_message([("search_places", {"city_state": "Austin, TX", "interest": "museums"})]),
+            _no_tool_calls(),
+            schema_rejected,  # initial proposal, attempt 1: drawn from the parse-retry budget
+            _proposal_message({"days": [{"day": 1, "stop_ids": ["p1", "p2"]}]}),  # attempt 2: succeeds
+        ]
+    )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        result = plan_trip(_request(), client=client, http_client=http_client, trace_dir=tmp_path)
+
+    assert result.report.ok is True
+    assert result.itinerary.verified is True
+    proposal_calls = [c for c in client.calls if "response_format" in c]
+    assert len(proposal_calls) == 2
+
+
+def test_plan_trip_authentication_error_raises_immediately_with_no_retries(tmp_path):
+    handler = make_handler(places_json=TWO_MUSEUMS)
+    auth_error = LLMError("AuthenticationError: Error code: 401 - invalid api key")
+    client = FakeClient(
+        [
+            _tool_call_message([("search_places", {"city_state": "Austin, TX", "interest": "museums"})]),
+            _no_tool_calls(),
+            auth_error,
+        ]
+    )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client, pytest.raises(LLMError) as excinfo:
+        plan_trip(_request(), client=client, http_client=http_client, trace_dir=tmp_path)
+
+    assert excinfo.value is auth_error
+    proposal_calls = [c for c in client.calls if "response_format" in c]
+    assert len(proposal_calls) == 1
+
+
+def test_plan_trip_llm_unavailable_raises_immediately_with_no_retries(tmp_path):
+    """LLMUnavailable already exhausted its own retries inside llm.chat; the
+    proposal phase must not retry it again from the parse-retry budget."""
+    handler = make_handler(places_json=TWO_MUSEUMS)
+    rate_limited = LLMUnavailable("RateLimitError after 5 attempts: rate limit exceeded")
+    client = FakeClient(
+        [
+            _tool_call_message([("search_places", {"city_state": "Austin, TX", "interest": "museums"})]),
+            _no_tool_calls(),
+            rate_limited,
+        ]
+    )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client, pytest.raises(LLMUnavailable) as excinfo:
+        plan_trip(_request(), client=client, http_client=http_client, trace_dir=tmp_path)
+
+    assert excinfo.value is rate_limited
+    proposal_calls = [c for c in client.calls if "response_format" in c]
+    assert len(proposal_calls) == 1
+
+
+def test_plan_trip_other_llm_error_raises_immediately_with_no_retries(tmp_path):
+    handler = make_handler(places_json=TWO_MUSEUMS)
+    bad_request = LLMError("BadRequestError: Error code: 404 - model not found")
+    client = FakeClient(
+        [
+            _tool_call_message([("search_places", {"city_state": "Austin, TX", "interest": "museums"})]),
+            _no_tool_calls(),
+            bad_request,
+        ]
+    )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client, pytest.raises(LLMError) as excinfo:
+        plan_trip(_request(), client=client, http_client=http_client, trace_dir=tmp_path)
+
+    assert excinfo.value is bad_request
+    proposal_calls = [c for c in client.calls if "response_format" in c]
+    assert len(proposal_calls) == 1
 
 
 # --- 9. content=None on a tool-call turn round-trips ---

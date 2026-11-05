@@ -30,6 +30,7 @@ from pydantic import ValidationError as PydanticValidationError
 
 from src import llm, pricing, tools
 from src.constants import FORECAST_MAX_DAYS, MAX_DAY_KM, MAX_STOPS, MIN_STOPS, RADIUS_KM
+from src.llm import LLMError
 from src.models import (
     Day,
     ForecastDay,
@@ -767,16 +768,43 @@ def _run_proposal_phase(
 
     while True:
         start = time.monotonic()
-        response = llm.chat(
-            client,
-            messages,
-            model=model,
-            response_format={
-                "type": "json_schema",
-                "json_schema": {"name": "itinerary_proposal", "strict": True, "schema": schema},
-            },
-            reasoning_effort=reasoning_effort,
-        )
+        try:
+            response = llm.chat(
+                client,
+                messages,
+                model=model,
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {"name": "itinerary_proposal", "strict": True, "schema": schema},
+                },
+                reasoning_effort=reasoning_effort,
+            )
+        except LLMError as exc:
+            if "does not match the expected schema" not in str(exc).lower():
+                # Everything else -- LLMUnavailable (retries already exhausted in
+                # llm.chat), auth failures, unknown models, other 4xx -- can't be
+                # fixed by replaying the same request, so it surfaces immediately
+                # instead of spending the parse-retry budget on it.
+                raise
+            # A 400 like Groq's "Generated JSON does not match the expected
+            # schema" is an empty generation, not a transient failure (llm.chat
+            # already does not retry it) -- but it is exactly the same kind of
+            # "did not produce a usable proposal" as bad JSON, so it draws from
+            # the same budget instead of failing on the first occurrence.
+            retries += 1
+            if retries > MAX_PARSE_RETRIES:
+                raise AgentError(
+                    f"the model did not produce a valid proposal after "
+                    f"{MAX_PARSE_RETRIES} retries: {exc}"
+                ) from exc
+            trace.note(f"{phase}: request failed ({exc}); retrying ({retries}/{MAX_PARSE_RETRIES})")
+            messages.append(
+                {
+                    "role": "user",
+                    "content": f"your last reply could not be used: {exc}. Reply again with valid JSON matching the schema.",
+                }
+            )
+            continue
         duration_ms = (time.monotonic() - start) * 1000
         message = response.choices[0].message
         reasoning = getattr(message, "reasoning", None) or ""
@@ -1066,9 +1094,18 @@ def _propose_and_repair(
         trace.repair(repairs + 1, failures)
 
         messages = _repair_messages(request, registry, last_proposal, failures, stop_mode)
-        proposal = _run_proposal_phase(
-            client, model, messages, trace, "repair", stop_mode, reasoning_effort
-        )
+        try:
+            proposal = _run_proposal_phase(
+                client, model, messages, trace, "repair", stop_mode, reasoning_effort
+            )
+        except AgentError as exc:
+            # The model never produced anything usable for this repair, even
+            # after the parse-retry budget. Raising here would turn a trip that
+            # already has a parsed, built itinerary into a hard failure; keep
+            # the last proposal that did parse, flagged unverified, instead.
+            trace.note(f"repair {repairs + 1} could not produce a usable proposal: {exc}")
+            itinerary.warnings = [*itinerary.warnings, f"repair {repairs + 1} failed: {exc}"]
+            break
 
         itinerary, build_failures = _build_itinerary(
             proposal,

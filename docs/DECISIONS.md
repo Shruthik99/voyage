@@ -96,3 +96,13 @@ invented places, but because it was never told the source label and wrote "catal
 of the JSON section it was copying from. V5 correctly failed every stop. The baseline must be
 given what it needs to copy correctly, or it measures a setup flaw instead of the model; V5
 itself is unchanged, so a genuinely altered id or an invented source still fails.
+
+## Schema-rejected generations are retried, and a failed repair keeps the last parsed plan
+Chose: a Groq 400 "Generated JSON does not match the expected schema" uses the same retry budget as unparseable JSON; every other LLM error (authentication, unknown model, an exhausted rate limit) is re-raised at once. If a repair still cannot parse, return the last proposal that parsed with verified=False and a warning. Error rows record the tokens actually spent.
+Rejected: failing the whole arm on the first 400, and retrying every LLM error.
+Why: found on one multi-city trip, where an empty generation ended the arm after two good repairs and the file under-recorded spend. Retrying every error would have hidden a wrong key or a daily-limit stop behind a misleading "model failure".
+
+## The Richmond slip stays in the system during the campaign
+Chose: leave the agent unchanged while the campaign runs; report the failure where the model dropped the state from a tool call and never recovered.
+Rejected: a forgiving tool that accepts a bare city name, mid-run.
+Why: changing the system mid-run makes earlier rows incomparable. A safe version (resolve a bare name only when exactly one route city matches) is for after the campaign, with a before and after rerun of the affected trips.

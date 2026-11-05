@@ -190,6 +190,33 @@ def test_interests_covered_subtracts_v3_missing_interest_details():
     assert row["interests_covered"] == 2
 
 
+def test_interests_param_overrides_the_traces_own_empty_request():
+    # adopt() never copies the gather trace's request onto arms A/B/C, so
+    # trace["request"] is always {} for them; the caller must pass interests
+    # explicitly rather than relying on the trace to carry it.
+    trace = {
+        "request": {},
+        "events": [
+            _validation(
+                0,
+                ok=False,
+                results=[
+                    _result("V3", "covered", "fail", summary=True),
+                    _result("V3", "missing_interest", "fail"),
+                ],
+                stops=1,
+                stops_proposed=1,
+                day_km=[0.0],
+            ),
+        ],
+    }
+
+    row = row_from_trace(trace, arm="C", interests=["food", "museums"])
+
+    assert row["interests_requested"] == 2
+    assert row["interests_covered"] == 1
+
+
 def test_cap_hit_detected_from_the_tool_step_cap_note():
     trace = {
         "request": {"interests": []},
@@ -283,3 +310,25 @@ def test_aggregate_empty_rows_reports_zero_n_with_no_division_errors():
     assert metrics["pass_rate"] == 0.0
     assert metrics["hallucination_rate"] == 0.0
     assert metrics["rule_fail_share"]["V1"] == 0.0
+
+
+def test_aggregate_interest_coverage_is_none_when_nothing_was_requested():
+    rows = [_row(ok=True, results=[], stops_proposed=2)]
+    rows[0]["interests_requested"] = 0
+    rows[0]["interests_covered"] = 0
+
+    metrics = aggregate(rows)
+
+    assert metrics["interest_coverage"] is None
+
+
+def test_aggregate_interest_coverage_pools_covered_over_requested():
+    rows = [
+        {**_row(ok=True, results=[], stops_proposed=2), "interests_requested": 2, "interests_covered": 1},
+        {**_row(ok=True, results=[], stops_proposed=2), "interests_requested": 1, "interests_covered": 1},
+    ]
+
+    metrics = aggregate(rows)
+
+    # pooled: (1 + 1) / (2 + 1) = 2/3, not mean(0.5, 1.0) = 0.75
+    assert metrics["interest_coverage"] == 2 / 3

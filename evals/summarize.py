@@ -6,10 +6,12 @@ from the rows read in; nothing here is a literal figure.
 
 import argparse
 import json
+import re
 from collections import defaultdict
 from collections.abc import Callable
 from pathlib import Path
 
+from evals import load_trips
 from evals.metrics import RULES, aggregate
 
 ARMS = ("A", "B", "C")
@@ -65,6 +67,37 @@ def _rows_for_arm(rows: list[dict], arm: str) -> list[dict]:
     return [row for row in rows if row["arm"] == arm]
 
 
+#: src/validator.py's V3 message ends in repr(interest); plain words like "food"
+#: or "museums" repr with no escaping, so a trailing quoted token is enough.
+_MISSING_INTEREST_RE = re.compile(r"'([^']*)'\s*$")
+
+
+def _trips_interests(trips: dict) -> dict[str, list[str]]:
+    """trip_id -> its distinct requested interests, read from trips.json."""
+    return {t["trip_id"]: list(dict.fromkeys(t["request"]["interests"])) for t in trips["trips"]}
+
+
+def _missing_interests(results: list[dict]) -> set[str]:
+    missing = set()
+    for r in results:
+        if r["summary"] or r["status"] != "fail" or r["rule"] != "V3" or r["code"] != "missing_interest":
+            continue
+        match = _MISSING_INTEREST_RE.search(r["message"])
+        if match:
+            missing.add(match.group(1))
+    return missing
+
+
+def _with_interest_coverage(row: dict, trips_by_id: dict[str, list[str]]) -> dict:
+    """row with interests_requested/interests_covered recomputed from trips.json
+    and the row's own V3 results, ignoring whatever those two fields already held
+    -- this is what keeps an old 0/0 row (and any future row) correct alike.
+    """
+    requested = set(trips_by_id.get(row["trip_id"], []))
+    covered = requested - _missing_interests(row["results"])
+    return {**row, "interests_requested": len(requested), "interests_covered": len(covered)}
+
+
 def _fmt_pct(x: float) -> str:
     return f"{x * 100:.1f}%"
 
@@ -77,11 +110,15 @@ def _fmt_tokens(x: float) -> str:
     return f"{x:,.0f}"
 
 
+def _fmt_pct_or_na(x: float | None) -> str:
+    return "n/a" if x is None else _fmt_pct(x)
+
+
 _METRIC_ROWS: tuple[tuple[str, str, Callable[[float], str]], ...] = (
     ("Pass rate", "pass_rate", _fmt_pct),
     ("Hallucinated-venue rate (V5 untraceable, pooled)", "hallucination_rate", _fmt_pct),
     ("Wrong-location stops (pooled)", "wrong_location_rate", _fmt_pct),
-    ("Interest coverage (pooled)", "interest_coverage", _fmt_pct),
+    ("Interest coverage (pooled)", "interest_coverage", _fmt_pct_or_na),
     ("Repairs per trip", "repairs_per_trip", _fmt_num),
     ("Tool calls per trip", "tool_calls_per_trip", _fmt_num),
     ("Tokens per trip (total, incl. shared gather)", "tokens_total_per_trip", _fmt_tokens),
@@ -120,10 +157,13 @@ def _rule_table_md(metrics_by_arm: dict[str, dict]) -> str:
     return "\n".join(lines)
 
 
-def render(rows: list[dict]) -> str:
+def render(rows: list[dict], *, trips_by_id: dict[str, list[str]] | None = None) -> str:
+    if trips_by_id is None:
+        trips_by_id = _trips_interests(load_trips())
+
     rows = _latest_by_pair(rows)
     invalid_rows = [r for r in rows if r["outcome"] == "rejected"]
-    other_rows = [r for r in rows if r["outcome"] != "rejected"]
+    other_rows = [_with_interest_coverage(r, trips_by_id) for r in rows if r["outcome"] != "rejected"]
     invalid_trip_ids = {r["trip_id"] for r in invalid_rows}
     attempted_trip_ids = {r["trip_id"] for r in other_rows}
 

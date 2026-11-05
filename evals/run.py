@@ -267,10 +267,10 @@ def _process_trip(
             c_trace.write(trace_dir)
             c_trace_dict = c_trace.to_dict()
             if args.force or (trip_id, "C") not in done:
-                c_metrics = metrics_module.row_from_trace(c_trace_dict, arm="C")
+                c_metrics = metrics_module.row_from_trace(c_trace_dict, arm="C", interests=request.interests)
                 write("C", _outcome_row(trip_id, "C", c_metrics, model=model, reasoning_effort=reasoning_effort, billed=c_metrics["tokens_total"]))
             if args.force or (trip_id, "B") not in done:
-                b_metrics = metrics_module.row_from_trace(c_trace_dict, arm="B", upto_attempt=0)
+                b_metrics = metrics_module.row_from_trace(c_trace_dict, arm="B", upto_attempt=0, interests=request.interests)
                 write("B", _outcome_row(trip_id, "B", b_metrics, model=model, reasoning_effort=reasoning_effort, billed=0))
 
     if need_a:
@@ -287,7 +287,7 @@ def _process_trip(
             a_trace.write(trace_dir)
             # Same split as the success path below: A bills its own attempt,
             # plus the gather only if C did not already bill it this session.
-            a_metrics_partial = metrics_module.row_from_trace(a_trace.to_dict(), arm="A")
+            a_metrics_partial = metrics_module.row_from_trace(a_trace.to_dict(), arm="A", interests=request.interests)
             billed_a = a_metrics_partial["tokens_arm"] + (0 if need_c else a_metrics_partial["tokens_gather"])
             write(
                 "A",
@@ -302,7 +302,7 @@ def _process_trip(
                 repairs=result.repairs, tool_calls=result.tool_calls,
             )
             a_trace.write(trace_dir)
-            a_metrics = metrics_module.row_from_trace(a_trace.to_dict(), arm="A")
+            a_metrics = metrics_module.row_from_trace(a_trace.to_dict(), arm="A", interests=request.interests)
             # The gather is billed by arm C; if C did not also run this
             # session, nobody else paid for it, so attribute it to A instead.
             billed_a = a_metrics["tokens_arm"] + (0 if need_c else a_metrics["tokens_gather"])

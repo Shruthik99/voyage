@@ -40,6 +40,14 @@ def _row(trip_id: str, arm: str, *, ok: bool, outcome: str | None = None, result
     }
 
 
+def _missing_interest_result(interest: str) -> dict:
+    return {
+        "rule": "V3", "code": "missing_interest", "status": "fail",
+        "message": f"no stop anywhere in the trip covers the requested interest {interest!r}",
+        "summary": False, "day": None, "stop": None, "source_id": None,
+    }
+
+
 def _rejected_row(trip_id: str, arm: str) -> dict:
     return {
         "schema_version": 1,
@@ -156,6 +164,80 @@ def test_force_rerun_rows_are_deduplicated_to_the_latest():
 
     # A's pass rate over paired trips is now [False, False] -> 0.0%, not 50.0%
     assert "0.0%" in headline
+
+
+# --- interest coverage: recomputed from trips.json + V3 results, never the
+# --- stored interests_requested/interests_covered fields on the row itself ---
+
+
+def test_interest_coverage_drops_below_100_percent_on_a_v3_missing_interest_detail():
+    trips_by_id = {"p1": ["food", "museums"]}
+    rows = [
+        _row("p1", "A", ok=False, results=[_missing_interest_result("food")]),
+        _row("p1", "B", ok=False, results=[_missing_interest_result("food")]),
+        _row("p1", "C", ok=False, results=[_missing_interest_result("food")]),
+    ]
+
+    markdown = render(rows, trips_by_id=trips_by_id)
+    headline, _secondary = markdown.split("## All finished trips", 1)
+
+    # requested=2 (food, museums), covered=1 (museums only) -> 50.0%
+    assert "50.0%" in headline
+
+
+def test_a_trip_with_no_requested_interests_reports_n_a_not_100_percent():
+    trips_by_id = {"p1": []}
+    rows = [
+        _row("p1", "A", ok=True),
+        _row("p1", "B", ok=True),
+        _row("p1", "C", ok=True),
+    ]
+
+    markdown = render(rows, trips_by_id=trips_by_id)
+    coverage_line = next(line for line in markdown.splitlines() if "Interest coverage" in line)
+
+    assert "n/a" in coverage_line
+    assert "100.0%" not in coverage_line
+
+
+def test_old_format_zero_zero_row_is_recomputed_from_trips_json_not_trusted():
+    trips_by_id = {"p1": ["history", "food"]}
+    rows = [
+        _row("p1", "A", ok=False, results=[_missing_interest_result("history")]),
+        _row("p1", "B", ok=False, results=[_missing_interest_result("history")]),
+        _row("p1", "C", ok=False, results=[_missing_interest_result("history")]),
+    ]
+    # the bug this guards against: every stored row already claims 0/0
+    rows = [{**r, "interests_requested": 0, "interests_covered": 0} for r in rows]
+
+    markdown = render(rows, trips_by_id=trips_by_id)
+    headline, _secondary = markdown.split("## All finished trips", 1)
+
+    # requested=2, covered=1 (food) -> 50.0%, not n/a and not 100%
+    assert "50.0%" in headline
+    assert "n/a" not in headline
+
+
+def test_pooled_interest_coverage_sums_covered_and_requested_across_trips():
+    trips_by_id = {
+        "p1": ["food", "museums"],  # 1 of 2 covered
+        "p2": ["history"],  # fully covered
+    }
+    rows = [
+        _row("p1", "A", ok=False, results=[_missing_interest_result("food")]),
+        _row("p1", "B", ok=False, results=[_missing_interest_result("food")]),
+        _row("p1", "C", ok=False, results=[_missing_interest_result("food")]),
+        _row("p2", "A", ok=True),
+        _row("p2", "B", ok=True),
+        _row("p2", "C", ok=True),
+    ]
+
+    markdown = render(rows, trips_by_id=trips_by_id)
+    headline, _secondary = markdown.split("## All finished trips", 1)
+
+    # pooled: covered (1+1) / requested (2+1) = 66.7%, not mean(50%, 100%) = 75.0%
+    assert "66.7%" in headline
+    assert "75.0%" not in headline
 
 
 def test_rule_failures_are_tallied_by_summary_share_and_detail_count():

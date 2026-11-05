@@ -58,12 +58,19 @@ def _empty_row(arm: str, *, tool_calls: int, tokens_gather: int, tokens_arm: int
     }
 
 
-def row_from_trace(trace: dict, *, arm: str, upto_attempt: int | None = None) -> dict:
+def row_from_trace(
+    trace: dict, *, arm: str, upto_attempt: int | None = None, interests: list[str] | None = None
+) -> dict:
     """One comparable row from a trace dict.
 
     Arm B is arm C's own event stream, truncated at (and including) the first
     validation event: ``row_from_trace(c_trace, arm="B", upto_attempt=0)``.
     Arm A and arm C pass their own full trace with upto_attempt=None.
+
+    ``interests`` is the request's requested-interest list. Pass it explicitly
+    when the caller already has the TripRequest in hand -- ``trace["request"]``
+    is only populated on the gather trace, not on the A/B/C traces that adopt
+    its events, so falling back to it here always reads an empty list for them.
     """
     events = trace["events"]
     if upto_attempt is not None:
@@ -79,7 +86,9 @@ def row_from_trace(trace: dict, *, arm: str, upto_attempt: int | None = None) ->
     cap_hit = any(
         e["kind"] == "note" and "tool step cap" in e.get("message", "") for e in events
     )
-    interests_requested = len(trace.get("request", {}).get("interests", []))
+    if interests is None:
+        interests = trace.get("request", {}).get("interests", [])
+    interests_requested = len(interests)
 
     validations = [e for e in events if e["kind"] == "validation"]
     if not validations:
@@ -161,7 +170,7 @@ def aggregate(rows: list[dict]) -> dict:
             "rule_detail_count": {rule: 0 for rule in RULES},
             "hallucination_rate": 0.0,
             "wrong_location_rate": 0.0,
-            "interest_coverage": 0.0,
+            "interest_coverage": None,
             "repairs_per_trip": 0.0,
             "tool_calls_per_trip": 0.0,
             "tokens_total_per_trip": 0.0,
@@ -204,7 +213,7 @@ def aggregate(rows: list[dict]) -> dict:
 
     total_requested = sum(row["interests_requested"] for row in rows)
     total_covered = sum(row["interests_covered"] for row in rows)
-    interest_coverage = total_covered / total_requested if total_requested else 1.0
+    interest_coverage = total_covered / total_requested if total_requested else None
 
     return {
         "n": n,

@@ -64,13 +64,15 @@ Fill from `evals/results.md` (paired headline table).
 - A forecast day with a null temperature caused the whole response to be rejected.
 - Arm A scored 100% hallucinated only because it was never shown the `source` label.
 
-## Limits
-- **Prices are unknown.** No free source provides them, so V2 can warn but never fail.
-- No weather replan, scheduler or live monitoring. This is not an autonomous system.
+## Scope and limits
+**Scope choices**
+- US cities only; city names are matched strictly ("St. Paul" is rejected, "Saint Paul" works) so the system fails instead of guessing.
 - "Hiking" means parks and outdoor spots, not trails.
-- US only; city names are matched strictly ("St. Paul" is rejected, "Saint Paul" works).
-- Free-tier limits (8,000 tokens per minute, 200,000 per day), so the evaluation ran over several days.
-- One model, one provider, a small sample.
+- Not autonomous: there is no scheduler, live monitoring or weather replan. Weather is fetched by code and used for warnings only.
+
+**Known gaps**
+- Prices are unknown. No free source provides them, so the budget rule (V2) reports "not checked" and can never fail. Budget handling is therefore untested.
+- One model, one provider, about 30 trips: gaps of a few trips between arms may not be real.
 
 ## Reproduction
 ```

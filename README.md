@@ -1,87 +1,102 @@
-# Voyage
+# Voyage: an agentic US trip planner with a validator that decides
 
-An agentic US trip planner where the model proposes and plain Python decides. An LLM gathers real places with tools and proposes an itinerary; eight rule checks (no LLM) validate it; failures go back to the model for up to three repairs. Most of the project is the evaluation: three arms, 30 trips, one fair comparison.
+![Python](https://img.shields.io/badge/Python-3.13-blue) ![Pydantic](https://img.shields.io/badge/Pydantic-v2-green) ![LLM](https://img.shields.io/badge/LLM-gpt--oss--120b%20on%20Groq-orange) ![Tests](https://img.shields.io/badge/tests-pytest-brightgreen)
 
-This is a portfolio project, not a product. See "Limits" for what it does not do.
+A tool-calling LLM proposes multi-day itineraries for US cities. Eight plain-Python rules decide whether a plan is acceptable, and failures go back to the model for up to three repairs. The project is evaluated in three arms on 30 trips.
 
-## What it does
-- **Input:** a route of "City, ST" stops, days per stop, travelers, budget, interests, start date.
-- **Output:** a day-by-day itinerary of real places (Geoapify), a 16-day forecast (Open-Meteo), a validator report, and a JSON trace of every tool call and repair.
-- US cities only. Malformed or non-US input is rejected before any API call.
+This is a portfolio project, not a product. See "Limits".
 
-## How it works
-1. Code geocodes every route city (a city that fails stops the run early), fetches forecasts, and builds the day skeleton from route x days per stop.
-2. **Tool phase:** the model calls `geocode` and `search_places` to collect real places.
+## Problem
+AI trip planners produce plans that look complete but are never checked: stops in the wrong state, place ids that no tool returned, requested interests skipped. This project asks whether a rule-based validator plus a repair loop measurably improves plan quality over letting the model write the plan unchecked.
+
+## Approach
+1. Code geocodes every route city (a city that fails stops the run early), fetches a 16-day forecast, and builds the day skeleton from route x days per stop.
+2. **Tool phase:** the model calls `geocode` and `search_places` (Geoapify) to collect real places.
 3. **Proposal phase:** the model names place ids from a catalog; code builds each stop from the tool result, so coordinates, address and state are never retyped by a model.
-4. **Validator:** eight pure-Python rules (below).
-5. **Repair:** failing results go back to the model, at most 3 times; otherwise the plan is returned flagged `verified=False`.
+4. **Validator (no LLM):** V1 location, V2 budget, V3 interests, V4 no placeholders, V5 every (source, id) came from a tool result this run, V6 daily distance, V7 no duplicates, V8 stops per day.
+5. **Repair:** only failing results go back to the model, at most 3 times; otherwise the plan is returned flagged `verified=False`.
 
 The two model phases are separate because Groq rejects tools and a strict JSON schema in one request (HTTP 400, checked by hand against the live API).
 
-## Validator rules
-| Rule | Checks |
-|---|---|
-| V1 | each stop is in its day's city state and within a radius of the city |
-| V2 | budget: `unpriced` (warn) / `within` / `uncertain` (warn) / `over` (fail) |
-| V3 | every requested interest has a stop |
-| V4 | no placeholders: name, source and id present |
-| V5 | every (source, id) came from a tool result in this run |
-| V6 | daily straight-line distance under a cap |
-| V7 | no place used twice |
-| V8 | each day has a sensible number of stops |
-
 ## Evaluation
-All arms are scored by the same validator, on the same gathered places, with `gpt-oss-120b` on Groq at low reasoning effort.
+All arms use the same validator, the same gathered places, `gpt-oss-120b` on Groq, and low reasoning effort.
 
 | Arm | What it is |
 |---|---|
 | A | LLM only, unrepaired: the model writes whole stops; nothing repairs a failure |
-| B | ids, no repair: the model names ids; this is arm C's first attempt |
-| C | full system: ids, plus up to 3 repairs |
+| B | ids, no repair: the model names ids (arm C's first attempt) |
+| C | full system: ids plus up to 3 repairs |
 
-B and C are paired, not independent. 30 trips: 29 plannable (single-, two- and three-city routes, ambiguous names such as Portland OR/ME, a small town) and one invalid input that must be rejected before any API call.
+- **30 trips:** single-, two- and three-city routes, ambiguous names (Portland OR/ME, Springfield, Columbus, Kansas City), a small town, and one invalid input that must be rejected before any API call.
+- **Metrics:** share of trips passing all rules, hallucinated-venue rate (V5 failures per proposed stop), wrong-location stops (V1), interest coverage, repairs, tool calls, tokens and seconds.
+- **Paired headline:** only trips where all three arms finished. B and C are paired, not independent.
+- Counts are shown next to percentages. With about 30 trips, a gap of a few trips may not be real.
 
-### Results
-Fill from `evals/results.md` (headline table, paired trips). Show counts next to percentages.
+## Engineering
+- Typed models (Pydantic v2) at every boundary: tool results, proposals, itineraries, validation reports.
+- Tools raise typed errors and never return defaults or placeholders; a failure is reported, not hidden.
+- Retries only for transient failures, with explicit limits; a rate limit waits as long as the provider asks.
+- Resumable eval runner: one line per finished trial, completed trials skipped on restart, stops cleanly at a token budget.
+- JSON trace per run (tool calls, validator reports, repairs, token usage); keys are scrubbed before anything is written.
+- 288 automated tests (no live API calls), Ruff clean, and every design choice recorded in `docs/DECISIONS.md`.
+
+## Results
+Fill from `evals/results.md` (paired headline table).
 
 | Metric | A | B | C |
 |---|---|---|---|
-| Trips passing all checks | [x of N] | [x of N] | [x of N] |
-| Hallucinated-venue rate (stops) | [x of N] | [x of N] | [x of N] |
+| Trips passing all rules | [x of N] | [x of N] | [x of N] |
+| Hallucinated-venue rate | [x of N stops] | [x of N stops] | [x of N stops] |
 | Wrong-location stops | [x of N] | [x of N] | [x of N] |
-| Tokens per trip (own) | [ ] | [ ] | [ ] |
+| Interest coverage | [x of N] | [x of N] | [x of N] |
+| Repairs per trip | 0 | 0 | [ ] |
+| Tokens per trip (this arm only) | [ ] | [ ] | [ ] |
 
-N is small (about 30 trips), so differences of a few trips may not be real. Re-create the table with `uv run python -m evals.summarize`.
-
-## What the runs showed
-- Arm A's failed ids are real place ids with altered characters, not invented places (checked against the cached tool responses).
-- At border cities (Kansas City MO/KS) the radius search returns places in the neighboring state, which V1 catches; repairs reduced this but did not remove it.
-- One trip fails V3 in every arm because the place data returns no history sites near Columbus, GA.
-- Groq sometimes rejects a generation outright; the retry covers two wordings of that error.
+**What the runs showed**
+- Arm A's failed ids were real place ids with altered characters, not invented places (a hand check of the failed ids found a near match for each among the cached real ids).
+- At border cities (Kansas City MO/KS) the radius search returns places in the neighboring state; V1 catches them.
+- **Where repair did not help:** Columbus, GA fails V3 in every arm because the place data returns no history sites there, and a Kansas City KS trip still failed after three repairs. Repairs also cost roughly twice the tokens of arm B.
+- Groq sometimes rejects a generation outright (two error wordings); the retry covers both, and affected trips were rerun.
 - One three-city trip failed once when the model dropped the state from a tool call; a rerun passed. Reported as a nondeterministic slip, not a fix.
 
-## Bugs that live runs found (mocked tests missed all of these)
-- Forecast coverage judged by the local clock, not the destination's date.
+**Bugs that live runs found (mocked tests had missed them)**
+- Forecast coverage was judged by the local clock, not the destination's date.
 - A forecast day with a null temperature caused the whole response to be rejected.
 - Arm A scored 100% hallucinated only because it was never shown the `source` label.
-- API-key text could reach an error message.
 
 ## Limits
-- **Prices are unknown.** No free source gives them, so V2 can warn but never fail; pricing coverage is zero.
-- **No weather replan** and no scheduler or live disruption monitoring. Not autonomous.
+- **Prices are unknown.** No free source provides them, so V2 can warn but never fail.
+- No weather replan, scheduler or live monitoring. This is not an autonomous system.
 - "Hiking" means parks and outdoor spots, not trails.
 - US only; city names are matched strictly ("St. Paul" is rejected, "Saint Paul" works).
-- Free-tier limits: 8,000 tokens/min and 200,000 tokens/day, so the evaluation ran over several days.
-- One model, one provider, small sample.
+- Free-tier limits (8,000 tokens per minute, 200,000 per day), so the evaluation ran over several days.
+- One model, one provider, a small sample.
 
-## Run it
-    uv sync
-    # .env: GEOAPIFY_KEY=... and GROQ_API_KEY=...
-    uv run pytest
-    uv run python -m evals.run --reasoning-effort low
-    uv run python -m evals.summarize --results evals/results.jsonl --out evals/results.md
+## Reproduction
+```
+uv sync
+# .env (see .env.example): GEOAPIFY_KEY=...  GROQ_API_KEY=...
+uv run pytest
+uv run ruff check .
+```
+Regenerate the results table from the committed rows (no API keys needed):
+```
+uv run python -m evals.summarize --results evals/results.jsonl --out evals/results.md
+```
+Re-run the campaign (resumes where it stopped):
+```
+uv run python -m evals.run --reasoning-effort low
+```
+Dry run with a fake client, no network: `uv run python -m evals.run --dry-run --limit 3 --out results.tmp.jsonl --trace-dir traces/tmp`
 
-The runner appends one line per finished trial and skips completed ones, so it resumes across days.
+Plan one trip:
+```python
+from datetime import date
+from src.agent import TripRequest, plan_trip
 
-## Layout
-`src/` (parsing, tools, models, validator, agent, llm, trace, pricing) · `evals/` (trips, runner, metrics, summary, results) · `tests/` · `docs/` (SPEC, PLAN, DECISIONS)
+req = TripRequest(route=["Denver, CO"], days_per_stop=2, travelers=2,
+                  budget_usd=400.0, meal_allowance_usd=40.0,
+                  interests=["museums", "hiking"], start_date=date(2026, 11, 10))
+result = plan_trip(req, reasoning_effort="low")
+print(result.itinerary.verified, result.report.warnings)
+```

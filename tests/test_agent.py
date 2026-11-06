@@ -484,6 +484,64 @@ def test_plan_trip_schema_rejection_is_retried_then_succeeds(tmp_path):
     assert len(proposal_calls) == 2
 
 
+# --- 6d. A Groq 400 ("failed to generate JSON") is retried the same as the
+# "does not match the expected schema" wording ---
+#
+# Evidence: two live campaign trips ended as errors at the first proposal call
+# with a Groq 400 reading "Failed to generate JSON. Please adjust your
+# prompt. See 'failed_generation' for more details." The guard only matched
+# "does not match the expected schema" (lower-cased), so this wording was
+# re-raised at once instead of drawing from the parse-retry budget.
+
+
+def test_plan_trip_failed_to_generate_json_is_retried_then_succeeds(tmp_path):
+    handler = make_handler(places_json=TWO_MUSEUMS)
+    failed_generation = LLMError(
+        "groq 400: Failed to generate JSON. Please adjust your prompt. "
+        "See 'failed_generation' for more details."
+    )
+    client = FakeClient(
+        [
+            _tool_call_message([("search_places", {"city_state": "Austin, TX", "interest": "museums"})]),
+            _no_tool_calls(),
+            failed_generation,  # initial proposal, attempt 1: drawn from the parse-retry budget
+            _proposal_message({"days": [{"day": 1, "stop_ids": ["p1", "p2"]}]}),  # attempt 2: succeeds
+        ]
+    )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        result = plan_trip(_request(), client=client, http_client=http_client, trace_dir=tmp_path)
+
+    assert result.report.ok is True
+    assert result.itinerary.verified is True
+    proposal_calls = [c for c in client.calls if "response_format" in c]
+    assert len(proposal_calls) == 2
+
+
+def test_plan_trip_failed_to_generate_json_exhausted_raises_agent_error(tmp_path):
+    handler = make_handler(places_json=TWO_MUSEUMS)
+    failed_generation = LLMError(
+        "groq 400: Failed to generate JSON. Please adjust your prompt. "
+        "See 'failed_generation' for more details."
+    )
+    client = FakeClient(
+        [
+            _tool_call_message([("search_places", {"city_state": "Austin, TX", "interest": "museums"})]),
+            _no_tool_calls(),
+            failed_generation,
+            failed_generation,
+            failed_generation,
+        ]
+    )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client, pytest.raises(AgentError):
+        plan_trip(_request(), client=client, http_client=http_client, trace_dir=tmp_path)
+
+    # Retried up to the parse-retry budget before giving up, not on the first try.
+    proposal_calls = [c for c in client.calls if "response_format" in c]
+    assert len(proposal_calls) == 3
+
+
 def test_plan_trip_authentication_error_raises_immediately_with_no_retries(tmp_path):
     handler = make_handler(places_json=TWO_MUSEUMS)
     auth_error = LLMError("AuthenticationError: Error code: 401 - invalid api key")

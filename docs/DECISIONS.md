@@ -106,3 +106,8 @@ Why: found on one multi-city trip, where an empty generation ended the arm after
 Chose: leave the agent unchanged while the campaign runs; report the failure where the model dropped the state from a tool call and never recovered.
 Rejected: a forgiving tool that accepts a bare city name, mid-run.
 Why: changing the system mid-run makes earlier rows incomparable. A safe version (resolve a bare name only when exactly one route city matches) is for after the campaign, with a before and after rerun of the affected trips.
+
+## The retry also covers Groq's "Failed to generate JSON" rejection
+Chose: both Groq wordings for a generation it could not turn into the strict JSON schema ("does not match the expected schema" and "Failed to generate JSON") draw from the parse-retry budget; every other LLM error is still re-raised at once.
+Rejected: leaving the second wording unhandled, which ended an arm on its first proposal.
+Why: the campaign produced two trips that ended as errors at the first proposal call, with no earlier plan to fall back on. This was changed after the campaign began, so the affected trips (nyc-philly-all-interests, san-diego-la-no-interests) are rerun with --force and the README says so.

@@ -54,6 +54,16 @@ MAX_REPAIRS = 3
 MAX_PARSE_RETRIES = 2  # malformed JSON, separate budget from repairs
 MAX_REPAIR_ITEMS = 20
 
+#: Substrings (checked against the lower-cased LLMError message) that mean the
+#: model's reply never became usable JSON -- an empty generation Groq itself
+#: rejected, not a transient failure (llm.chat already does not retry these).
+#: Draws from the same parse-retry budget as malformed JSON instead of
+#: surfacing on the first occurrence.
+RETRYABLE_LLM_ERROR_PHRASES = (
+    "does not match the expected schema",
+    "failed to generate json",
+)
+
 SEARCH_LIMIT = 20  # requested from the places API per search_places call
 CATALOG_PER_INTEREST = 6  # shown to the model, per interest per city
 
@@ -780,17 +790,13 @@ def _run_proposal_phase(
                 reasoning_effort=reasoning_effort,
             )
         except LLMError as exc:
-            if "does not match the expected schema" not in str(exc).lower():
+            message = str(exc).lower()
+            if not any(phrase in message for phrase in RETRYABLE_LLM_ERROR_PHRASES):
                 # Everything else -- LLMUnavailable (retries already exhausted in
                 # llm.chat), auth failures, unknown models, other 4xx -- can't be
                 # fixed by replaying the same request, so it surfaces immediately
                 # instead of spending the parse-retry budget on it.
                 raise
-            # A 400 like Groq's "Generated JSON does not match the expected
-            # schema" is an empty generation, not a transient failure (llm.chat
-            # already does not retry it) -- but it is exactly the same kind of
-            # "did not produce a usable proposal" as bad JSON, so it draws from
-            # the same budget instead of failing on the first occurrence.
             retries += 1
             if retries > MAX_PARSE_RETRIES:
                 raise AgentError(

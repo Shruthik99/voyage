@@ -111,3 +111,8 @@ Why: changing the system mid-run makes earlier rows incomparable. A safe version
 Chose: both Groq wordings for a generation it could not turn into the strict JSON schema ("does not match the expected schema" and "Failed to generate JSON") draw from the parse-retry budget; every other LLM error is still re-raised at once.
 Rejected: leaving the second wording unhandled, which ended an arm on its first proposal.
 Why: the campaign produced two trips that ended as errors at the first proposal call, with no earlier plan to fall back on. This was changed after the campaign began, so the affected trips (nyc-philly-all-interests, san-diego-la-no-interests) are rerun with --force and the README says so.
+
+## A trip input used the place data's spelling, and abbreviations stay a limitation
+Chose: change the trip "St. Paul, MN" to "Saint Paul, MN" in evals/trips.json and rerun it.
+Rejected: loosening the strict city match so "St." resolves to "Saint".
+Why: the place data names the city "Saint Paul", so the strict match rejected the abbreviation before any LLM call (zero tokens, all three arms). Loosening the match would change the system under test and risk wrong-city matches. Abbreviated city names are a documented limitation.

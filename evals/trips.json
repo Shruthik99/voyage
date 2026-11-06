@@ -382,7 +382,7 @@
       "tags": ["three-city"],
       "expect": "plan",
       "request": {
-        "route": ["Minneapolis, MN", "St. Paul, MN", "Duluth, MN"],
+        "route": ["Minneapolis, MN", "Saint Paul, MN", "Duluth, MN"],
         "days_per_stop": 2,
         "travelers": 2,
         "budget_usd": 1400,

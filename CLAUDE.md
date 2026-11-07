@@ -17,8 +17,11 @@ validates every plan. See docs/PLAN.md, docs/DECISIONS.md, and docs/SPEC.md.
 - No paid APIs. LLM = OpenAI SDK against Groq's endpoint, default model openai/gpt-oss-120b.
 
 ## Layout
-src/ (parsing, tools, models, geo, constants, llm, pricing, trace, planner, validator, agent), tests/, docs/,
+src/ (parsing, tools, models, geo, constants, llm, pricing, trace, planner, validator, agent,
+mapview, demo), tests/, docs/,
 traces/ (JSON run traces, gitignored), cache/ (API response cache, gitignored)
+
+src/demo.py is a script that calls live APIs by design, like evals/run.py; its tests use fixtures only.
 
 ## Code style
 - Python 3.13. Type hints on public functions.

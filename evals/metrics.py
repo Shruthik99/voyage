@@ -192,10 +192,7 @@ def aggregate(rows: list[dict]) -> dict:
         fail_rows = 0
         detail_count = 0
         for row in rows:
-            summary = next(
-                (r for r in row["results"] if r["rule"] == rule and r["summary"]), None
-            )
-            if summary is not None and summary["status"] == "fail":
+            if any(r["rule"] == rule and r["status"] == "fail" for r in row["results"]):
                 fail_rows += 1
             detail_count += _rule_detail_count(row["results"], rule)
         rule_fail_share[rule] = fail_rows / n

@@ -293,6 +293,67 @@ def test_aggregate_rule_fail_share_and_detail_count():
     assert metrics["wrong_location_rate"] == 1 / 8
 
 
+def test_aggregate_rule_fail_share_counts_a_detail_failure_with_no_summary_failure():
+    # evidence from results.jsonl: the agent merges a V5 "untraceable" detail in
+    # while building stops, but the validator's own V5 summary result still
+    # passes -- that trip must still count as a V5 failure.
+    rows = [
+        _row(
+            ok=False,
+            results=[_result("V5", "traceable", "pass", summary=True), _result("V5", "untraceable", "fail")],
+            stops_proposed=4,
+        ),
+        _row(ok=True, results=[_result("V5", "traceable", "pass", summary=True)], stops_proposed=4),
+    ]
+
+    metrics = aggregate(rows)
+
+    assert metrics["rule_fail_share"]["V5"] == 0.5
+    assert metrics["rule_detail_count"]["V5"] == 1
+
+
+def test_aggregate_rule_fail_share_counts_a_row_with_both_summary_and_detail_failure_once():
+    rows = [
+        _row(
+            ok=False,
+            results=[_result("V5", "traceable", "fail", summary=True), _result("V5", "untraceable", "fail")],
+            stops_proposed=4,
+        ),
+    ]
+
+    metrics = aggregate(rows)
+
+    assert metrics["rule_fail_share"]["V5"] == 1.0
+    assert metrics["rule_detail_count"]["V5"] == 1
+
+
+def test_aggregate_rule_fail_share_is_zero_with_neither_summary_nor_detail_failure():
+    rows = [
+        _row(ok=True, results=[_result("V5", "traceable", "pass", summary=True)], stops_proposed=4),
+    ]
+
+    metrics = aggregate(rows)
+
+    assert metrics["rule_fail_share"]["V5"] == 0.0
+    assert metrics["rule_detail_count"]["V5"] == 0
+
+
+def test_aggregate_rule_fail_share_counts_a_v8_detail_failure_with_no_summary_failure():
+    rows = [
+        _row(
+            ok=False,
+            results=[_result("V8", "sized", "pass", summary=True), _result("V8", "bad_day_number", "fail")],
+            stops_proposed=4,
+        ),
+        _row(ok=True, results=[_result("V8", "sized", "pass", summary=True)], stops_proposed=4),
+    ]
+
+    metrics = aggregate(rows)
+
+    assert metrics["rule_fail_share"]["V8"] == 0.5
+    assert metrics["rule_detail_count"]["V8"] == 1
+
+
 def test_aggregate_excludes_day_level_v1_codes_from_wrong_location_rate():
     rows = [
         _row(ok=False, results=[_result("V1", "bad_city", "fail"), _result("V1", "no_city_point", "fail")], stops_proposed=4),

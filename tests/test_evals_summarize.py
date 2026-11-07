@@ -254,3 +254,66 @@ def test_rule_failures_are_tallied_by_summary_share_and_detail_count():
 
     assert "V5" in markdown
     assert "1 detail(s)" in markdown
+
+
+def test_rule_share_counts_a_detail_only_failure_with_a_passing_summary():
+    # the bug this guards against: the agent merged a V5 "untraceable" detail in
+    # while building stops, but the validator's own V5 summary result passed, so
+    # the table printed 0.0% for a rule that in fact failed on this trip.
+    rows = [
+        _row(
+            "p1", "B", ok=False,
+            results=[_result("V5", "traceable", "pass", summary=True), _result("V5", "untraceable", "fail")],
+        ),
+        _row("p1", "A", ok=True, results=[_result("V5", "traceable", "pass", summary=True)]),
+        _row("p1", "C", ok=True, results=[_result("V5", "traceable", "pass", summary=True)]),
+        _row(
+            "p2", "B", ok=True,
+            results=[_result("V5", "traceable", "pass", summary=True)],
+        ),
+        _row("p2", "A", ok=True, results=[_result("V5", "traceable", "pass", summary=True)]),
+        _row("p2", "C", ok=True, results=[_result("V5", "traceable", "pass", summary=True)]),
+    ]
+
+    markdown = render(rows)
+
+    from evals.metrics import aggregate
+
+    metrics = aggregate([r for r in rows if r["arm"] == "B"])
+    assert metrics["rule_fail_share"]["V5"] == 0.5  # 1 of 2 B trips has a V5 failure
+
+    headline, _secondary = markdown.split("## All finished trips", 1)
+    rule_section = headline.split("### Failures by rule")[1]
+    # B's V5 row must show the computed 50.0% share, not 0.0%, even though no
+    # V5 summary result ever failed.
+    v5_row = next(line for line in rule_section.splitlines() if line.startswith("| V5"))
+    cells = [c.strip() for c in v5_row.strip("|").split("|")]
+    assert cells[2] == "50.0% (1 detail(s))"  # columns: Rule, A, B, C
+
+
+def test_rule_share_counts_a_v8_detail_only_failure_in_the_all_finished_table():
+    rows = [
+        _row(
+            "p1", "C", ok=False,
+            results=[_result("V8", "sized", "pass", summary=True), _result("V8", "bad_day_number", "fail")],
+        ),
+        _row("p1", "A", ok=True, results=[_result("V8", "sized", "pass", summary=True)]),
+        _row("p1", "B", ok=True, results=[_result("V8", "sized", "pass", summary=True)]),
+        # u1 is unpaired (arm A missing) so it only shows up in the all-finished table
+        _row("u1", "C", ok=True, results=[_result("V8", "sized", "pass", summary=True)]),
+        _row("u1", "B", ok=True, results=[_result("V8", "sized", "pass", summary=True)]),
+    ]
+
+    markdown = render(rows)
+
+    from evals.metrics import aggregate
+
+    all_c_rows = [r for r in rows if r["arm"] == "C"]
+    metrics = aggregate(all_c_rows)
+    assert metrics["rule_fail_share"]["V8"] == 0.5  # 1 of 2 C trips (p1, u1)
+
+    _headline, secondary = markdown.split("## All finished trips", 1)
+    rule_section = secondary.split("### Failures by rule")[1]
+    v8_row = next(line for line in rule_section.splitlines() if line.startswith("| V8"))
+    cells = [c.strip() for c in v8_row.strip("|").split("|")]
+    assert cells[3] == "50.0% (1 detail(s))"  # columns: Rule, A, B, C
